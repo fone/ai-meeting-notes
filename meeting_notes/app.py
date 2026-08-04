@@ -45,6 +45,7 @@ _METER_HOLD_SECONDS = 1.5
 _METER_CLIP_SECONDS = 3.0
 _METER_SILENCE_SECONDS = 15.0
 _METER_SILENCE_LEVEL = 0.01
+_ROUTING_HEALTHY_COLLAPSE_SECONDS = 6.0
 
 
 def format_dbfs(level: float) -> str:
@@ -959,6 +960,8 @@ class MeetingNotesApp(App):
         # the user can see in real time which apps are routing to the
         # captured sink.
         self._routing_refresh_interval = None
+        self._routing_warning_visible = False
+        self._routing_healthy_since: Optional[float] = None
         self.recording_start_time = None
         self._active_recording_path: Optional[Path] = None
         self.all_note_paths = []  # Store all note paths for filtering
@@ -1236,13 +1239,30 @@ class MeetingNotesApp(App):
         return self.recorder.get_paused_duration() if self.recorder else 0.0
 
     def _render_routing_block(self, widget: Static, lines: list[str]) -> None:
-        """Collapse healthy routing status; show only actionable routing warnings."""
+        """Collapse healthy routing after stability, avoiding meter position flapping."""
+        now = time.monotonic()
         if lines:
+            self._routing_warning_visible = True
+            self._routing_healthy_since = None
             widget.update("\n".join(lines))
             widget.display = True
-        else:
+            return
+
+        if not self._routing_warning_visible:
             widget.update("")
             widget.display = False
+            return
+
+        if self._routing_healthy_since is None:
+            self._routing_healthy_since = now
+            return
+        if now - self._routing_healthy_since < _ROUTING_HEALTHY_COLLAPSE_SECONDS:
+            return
+
+        self._routing_warning_visible = False
+        self._routing_healthy_since = None
+        widget.update("")
+        widget.display = False
 
     def update_audio_sources_panel(self) -> None:
         """Refresh the 'Audio sources' panel with what's currently playing.
@@ -1516,6 +1536,8 @@ class MeetingNotesApp(App):
                 # Reset mid-recording warning state for this session
                 self._warned_misrouted_apps = set()
                 self._warned_silent_system = False
+                self._routing_warning_visible = False
+                self._routing_healthy_since = None
                 logger.info(
                     f"action_start_recording: recorder running, "
                     f"resolved_system_sink={self.recorder.resolved_system_sink!r}"

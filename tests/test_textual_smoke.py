@@ -213,6 +213,33 @@ async def test_routing_block_collapses_when_healthy(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_routing_warning_waits_for_stable_health_before_collapsing(tmp_path, monkeypatch):
+    """A flapping route keeps the warning row in place until health is stable."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.chdir(tmp_path)
+    app = MeetingNotesApp()
+    async with app.run_test() as pilot:
+        view = RecordingView()
+        await app.mount(view)
+        await pilot.pause()
+        routing = view.query_one("#audio-sources-list", Static)
+        warning = ["[yellow]⚠ Nothing routing to the captured sink right now[/yellow]"]
+
+        app._render_routing_block(routing, warning)
+        monkeypatch.setattr(meeting_app.time, "monotonic", lambda: 100.0)
+        app._render_routing_block(routing, [])
+        assert routing.display
+        app._render_routing_block(routing, warning)
+        monkeypatch.setattr(meeting_app.time, "monotonic", lambda: 101.0)
+        app._render_routing_block(routing, [])
+        assert routing.display
+        monkeypatch.setattr(meeting_app.time, "monotonic", lambda: 107.0)
+        app._render_routing_block(routing, [])
+        assert not routing.display
+        app.exit()
+
+
+@pytest.mark.asyncio
 async def test_routing_block_uses_existing_detection_but_hides_healthy_copy(tmp_path, monkeypatch):
     """The routing check remains intact; only its healthy presentation collapses."""
     monkeypatch.setenv("HOME", str(tmp_path))
