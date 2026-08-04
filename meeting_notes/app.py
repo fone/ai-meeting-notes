@@ -3,9 +3,11 @@
 
 import sys
 import time
+import math
 import subprocess
 import os
 import multiprocessing.resource_tracker
+from dataclasses import dataclass
 from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Optional
@@ -25,11 +27,76 @@ from meeting_notes.config import load_config, save_config, AppConfig, validate_c
 from meeting_notes.settings import SettingsScreen
 from meeting_notes.logger import setup_logging, get_logger
 from meeting_notes.level_meter import MicLevelMeter
+from meeting_notes.device_names import resolve_device_name
 from meeting_notes.audio_test_screen import AudioTestScreen
 
 # Initialize logging
 setup_logging(debug=False)
 logger = get_logger(__name__)
+
+
+_METER_FLOOR = 10 ** (-60 / 20)
+_METER_HOLD_SECONDS = 1.5
+_METER_CLIP_SECONDS = 3.0
+_METER_SILENCE_SECONDS = 15.0
+_METER_SILENCE_LEVEL = 0.01
+
+
+def format_dbfs(level: float) -> str:
+    """Format a normalized peak as dBFS, using -∞ below the display floor."""
+    level = max(0.0, min(level, 1.0))
+    if level < _METER_FLOOR:
+        return "-∞ dBFS"
+    return f"{max(-60.0, 20 * math.log10(level)):.1f} dBFS"
+
+
+def format_meter_bar(level: float, hold: float, clipped: bool, width: int = 30) -> str:
+    """Build a colored peak bar with a peak-hold marker and dBFS reading."""
+    level = max(0.0, min(level, 1.0))
+    hold = max(level, min(hold, 1.0))
+    filled = int(round(level * width))
+    marker = min(width - 1, int(round(hold * (width - 1))))
+    cells = ["█" if index < filled else "░" for index in range(width)]
+    cells[marker] = "│"
+    color = "red" if clipped or level >= 0.89 else "yellow" if level >= 0.5 else "green"
+    clip_text = "  [bold red]CLIP[/bold red]" if clipped else ""
+    return f"[{color}]{''.join(cells)}[/{color}]  {format_dbfs(level)}{clip_text}"
+
+
+@dataclass
+class MeterVisualState:
+    """Small per-stream state machine for meter rendering and warnings."""
+
+    hold: float = 0.0
+    hold_at: float = 0.0
+    clip_until: float = 0.0
+    silence_started: float | None = None
+    silence_warned: bool = False
+
+    def observe(self, level: float, *, now: float) -> bool:
+        """Update visual state and return True once per continuous silence period."""
+        level = max(0.0, min(level, 1.0))
+        if level >= self.hold:
+            self.hold = level
+            self.hold_at = now
+        else:
+            decay = max(0.0, 1.0 - ((now - self.hold_at) / _METER_HOLD_SECONDS))
+            self.hold = max(level, self.hold * decay)
+        if level >= 0.98:
+            self.clip_until = now + _METER_CLIP_SECONDS
+        if level >= _METER_SILENCE_LEVEL:
+            self.silence_started = None
+            self.silence_warned = False
+            return False
+        if self.silence_started is None:
+            self.silence_started = now
+        if not self.silence_warned and now - self.silence_started >= _METER_SILENCE_SECONDS:
+            self.silence_warned = True
+            return True
+        return False
+
+    def is_clipped(self, *, now: float) -> bool:
+        return now < self.clip_until
 
 
 class ActionBar(Horizontal):
@@ -875,6 +942,10 @@ class MeetingNotesApp(App):
         self._peak_mic_level = 0.0
         self._peak_system_level = 0.0
         self._last_peak_log = 0.0
+        self._meter_visuals = {
+            "mic": MeterVisualState(),
+            "system": MeterVisualState(),
+        }
         # Whether we've already emitted the "system audio looks silent"
         # warning for this recording session. Without this we'd spam the
         # log every 5 seconds for entire meetings where the user is just
@@ -1203,17 +1274,20 @@ class MeetingNotesApp(App):
         except Exception as exc:  # noqa: BLE001
             logger.debug(f"update_audio_sources_panel failed: {exc}")
 
-    @staticmethod
-    def _format_level_bar(level: float, width: int = 30) -> str:
-        filled = int(round(level * width))
-        if level >= 0.9:
-            color = "red"
-        elif level >= 0.7:
-            color = "yellow"
-        else:
-            color = "green"
-        bar = f"[{color}]{'█' * filled}[/{color}][dim]{'░' * (width - filled)}[/dim]"
-        return f"{bar}  {int(level * 100):3d}%"
+    def _format_level_bar(self, level: float, stream: str, now: float) -> tuple[str, bool]:
+        """Update one stream's presentation state and return render text + warning."""
+        visual = self._meter_visuals[stream]
+        warn_silence = visual.observe(level, now=now)
+        return format_meter_bar(level, visual.hold, visual.is_clipped(now=now)), warn_silence
+
+    def _notify_silent_stream(self, stream: str) -> None:
+        label = "Microphone" if stream == "mic" else "System audio"
+        message = f"⚠ {label} has been silent for 15 seconds. Check your audio routing."
+        logger.warning("level-meter[%s]: %s", stream, message)
+        try:
+            self.notify(message, severity="warning", timeout=12)
+        except Exception:
+            pass
 
     def _maybe_log_peaks(self) -> None:
         """Once every ~5s, log the running peak levels so the file log can
@@ -1229,18 +1303,6 @@ class MeetingNotesApp(App):
             f"mic={self._peak_mic_level * 100:.0f}%, "
             f"system={self._peak_system_level * 100:.0f}%"
         )
-        # Only warn ONCE per recording about a flat system meter. After
-        # the first warning the live system-audio bar is the user's
-        # ongoing signal; we don't need to spam the log every 5s for an
-        # hour-long meeting where the user happens to be just talking
-        # (no shared video / screen-share / participants speaking).
-        if self._peak_system_level < 0.01 and not self._warned_silent_system:
-            logger.warning(
-                "level-meter: system audio peak < 1% in the last 5s — "
-                "monitor capture may be silent. Check what's playing "
-                "(this warning will not repeat for this recording)."
-            )
-            self._warned_silent_system = True
         # Reset rolling peaks for the next window
         self._peak_mic_level = 0.0
         self._peak_system_level = 0.0
@@ -1252,16 +1314,17 @@ class MeetingNotesApp(App):
         self._maybe_log_peaks()
 
         now = time.monotonic()
-        if now - self._last_level_render < 0.08 or self._is_paused():
+        if self._is_paused() or now - self._last_level_render < 0.08:
             return
         self._last_level_render = now
-
-        text = self._format_level_bar(level)
+        text, warn_silence = self._format_level_bar(level, "mic", now)
 
         def _update():
             try:
                 view = self.query_one(RecordingView)
                 view.query_one("#level-meter-bar", Static).update(text)
+                if warn_silence:
+                    self._notify_silent_stream("mic")
             except Exception:
                 pass  # view torn down; meter will be stopped shortly
 
@@ -1277,16 +1340,17 @@ class MeetingNotesApp(App):
         self._maybe_log_peaks()
 
         now = time.monotonic()
-        if now - self._last_system_level_render < 0.08 or self._is_paused():
+        if self._is_paused() or now - self._last_system_level_render < 0.08:
             return
         self._last_system_level_render = now
-
-        text = self._format_level_bar(level)
+        text, warn_silence = self._format_level_bar(level, "system", now)
 
         def _update():
             try:
                 view = self.query_one(RecordingView)
                 view.query_one("#system-level-meter-bar", Static).update(text)
+                if warn_silence:
+                    self._notify_silent_stream("system")
             except Exception:
                 pass
 
@@ -1300,8 +1364,10 @@ class MeetingNotesApp(App):
         self._peak_mic_level = 0.0
         self._peak_system_level = 0.0
         self._last_peak_log = time.monotonic()
-
-        # Mic meter
+        self._meter_visuals = {
+            "mic": MeterVisualState(),
+            "system": MeterVisualState(),
+        }
         if self._level_meter is None and self.config.recording_mode in ("mic", "combined"):
             device = self.config.mic_device or None
             logger.info(f"level-meter[mic]: starting on device={device or 'default'}")
@@ -1398,9 +1464,15 @@ class MeetingNotesApp(App):
                 info_lines = [mode_display.get(device_info['mode'], device_info['mode'])]
 
                 if 'mic_device' in device_info:
-                    info_lines.append(f"Mic: {device_info['mic_device']}")
+                    mic_device = device_info['mic_device']
+                    info_lines.append(
+                        f"Mic: {resolve_device_name(mic_device, kind='source')}"
+                    )
                 if 'system_device' in device_info:
-                    info_lines.append(f"System: {device_info['system_device']}")
+                    system_device = self.recorder.resolved_system_sink or device_info['system_device']
+                    info_lines.append(
+                        f"System: {resolve_device_name(system_device, kind='sink')}"
+                    )
                 
                 audio_info_text = '\n'.join(info_lines)
                 audio_info_widget = recording_view.query_one("#audio-device-info", Static)
