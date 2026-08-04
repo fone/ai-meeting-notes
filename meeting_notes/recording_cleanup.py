@@ -12,6 +12,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Iterable
 
+from meeting_notes.recording_notes import remove_recording_notes
+
 logger = logging.getLogger(__name__)
 
 
@@ -78,6 +80,13 @@ def _age_cutoff_days(days: int, now: datetime | None = None) -> datetime:
     return now - timedelta(days=days)
 
 
+def _remove_wav_and_sidecar(wav: Path) -> None:
+    """Delete a WAV and only the notes sidecar bearing its exact stem."""
+    wav.unlink()
+    if remove_recording_notes(wav):
+        logger.info("Removed paired recording notes sidecar for %s", wav.name)
+
+
 def cleanup_recordings(
     recordings_dir: Path,
     policy: CleanupPolicy,
@@ -113,7 +122,7 @@ def cleanup_recordings(
             mtime = datetime.fromtimestamp(wav.stat().st_mtime)
             if mtime < normal_cutoff:
                 try:
-                    wav.unlink()
+                    _remove_wav_and_sidecar(wav)
                     removed.append(wav.name)
                     logger.info(
                         "Removed old recording %s (mtime %s, older than %s days)",
@@ -132,7 +141,7 @@ def cleanup_recordings(
             mtime = datetime.fromtimestamp(wav.stat().st_mtime)
             if mtime < temp_cutoff:
                 try:
-                    wav.unlink()
+                    _remove_wav_and_sidecar(wav)
                     removed.append(wav.name)
                     logger.info(
                         "Removed old diagnostic temp audio %s (mtime %s, older than %s hours)",
@@ -165,7 +174,7 @@ def cleanup_recordings(
             oldest = temp_files.pop(0)
             size = oldest.stat().st_size
             try:
-                oldest.unlink()
+                _remove_wav_and_sidecar(oldest)
                 removed.append(oldest.name)
                 total_bytes -= size
                 logger.info(

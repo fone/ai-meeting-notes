@@ -56,6 +56,22 @@ def test_normal_retention_deletes_old_completed_wavs(tmp_path):
     assert new.exists()
 
 
+def test_wav_cleanup_removes_only_its_paired_notes_sidecar(tmp_path):
+    now = datetime.now()
+    old = tmp_path / "2026-08-01-120000.wav"
+    sidecar = tmp_path / "2026-08-01-120000.notes.md"
+    unrelated = tmp_path / "unrelated.md"
+    for path in (old, sidecar, unrelated):
+        path.write_text("x")
+    _set_mtime(old, _days_ago(35, now))
+
+    cleanup_recordings(tmp_path, CleanupPolicy(normal_retention_days=30), now=now)
+
+    assert not old.exists()
+    assert not sidecar.exists()
+    assert unrelated.exists()
+
+
 def test_normal_retention_zero_disables_age_cleanup(tmp_path):
     now = datetime.now()
     normal = tmp_path / "2025-01-01-120000.wav"

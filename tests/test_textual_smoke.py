@@ -26,7 +26,7 @@ pytest.importorskip("textual", reason="run `pip install -e .[all,dev]` to enable
 import meeting_notes.app as meeting_app  # noqa: E402
 from meeting_notes.app import ActionBar, MeetingNotesApp, RecordingView  # noqa: E402  (deliberate import-after-skip)
 from meeting_notes.config import AppConfig, load_config  # noqa: E402
-from textual.widgets import Button, Input, Static  # noqa: E402
+from textual.widgets import Button, Input, Static, TextArea  # noqa: E402
 
 
 @pytest.mark.asyncio
@@ -146,6 +146,7 @@ async def test_fake_recorder_starts_and_stops_without_capture_processes(tmp_path
             self.running = False
             self.started = False
             self.stopped = False
+            self.current_file = tmp_path / "recordings" / "fake-recording.wav"
 
         def is_recording(self):
             return self.running
@@ -169,23 +170,31 @@ async def test_fake_recorder_starts_and_stops_without_capture_processes(tmp_path
             return {"mode": "mic", "mic_device": "fake-mic"}
 
     fake = FakeRecorder()
+    processed = []
     async with app.run_test(size=(80, 24)) as pilot:
         app.recorder = fake
         monkeypatch.setattr(app, "_start_level_meter", lambda: None)
         monkeypatch.setattr(app, "_stop_level_meter", lambda: None)
         monkeypatch.setattr(app, "update_audio_sources_panel", lambda: None)
-        monkeypatch.setattr(app, "process_recording", lambda *args: None)
+        monkeypatch.setattr(app, "process_recording", lambda *args: processed.append(args))
         await app.action_start_recording()
         await pilot.pause()
         assert fake.started
         assert app.is_recording
-        assert app.query_one(RecordingView)
+        recording_view = app.query_one(RecordingView)
+        recording_view.query_one("#meeting-title-input", Input).value = "Fake meeting"
+        recording_view.query_one("#user-notes-input", TextArea).text = "- durable note"
+        await pilot.pause()
+        sidecar = fake.current_file.with_suffix(".notes.md")
+        assert sidecar.exists()
 
         app.action_stop_recording()
         await pilot.pause()
         assert fake.stopped
         assert not app.is_recording
         assert not list(app.query(RecordingView))
+        assert sidecar.exists()
+        assert processed == [("fake-recording.wav", "Fake meeting", "- durable note")]
         app.exit()
 
 
@@ -234,6 +243,30 @@ def test_recording_context_hides_library_actions(tmp_path, monkeypatch):
     assert app.check_action("open_settings", ()) is True
     assert app.check_action("quit", ()) is True
 
+
+@pytest.mark.asyncio
+async def test_recording_notes_persist_to_sidecar_while_typing(tmp_path, monkeypatch):
+    """A crash after typing notes must not lose the current recording context."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.chdir(tmp_path)
+
+    app = MeetingNotesApp()
+    audio_path = tmp_path / "recordings" / "2026-08-04-120000.wav"
+    app.is_recording = True
+    app._active_recording_path = audio_path
+    async with app.run_test() as pilot:
+        await app.mount(RecordingView())
+        view = app.query_one(RecordingView)
+        view.query_one("#meeting-title-input", Input).value = "Client kickoff"
+        view.query_one("#user-notes-input", TextArea).text = "- Ask about timeline"
+        await pilot.pause()
+
+        sidecar = audio_path.with_suffix(".notes.md")
+        assert sidecar.exists()
+        content = sidecar.read_text()
+        assert "Client kickoff" in content
+        assert "- Ask about timeline" in content
+        app.exit()
 
 @pytest.mark.asyncio
 async def test_settings_screen_opens(tmp_path, monkeypatch):

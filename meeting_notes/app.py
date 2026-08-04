@@ -28,6 +28,11 @@ from meeting_notes.settings import SettingsScreen
 from meeting_notes.logger import setup_logging, get_logger
 from meeting_notes.level_meter import MicLevelMeter
 from meeting_notes.device_names import resolve_device_name
+from meeting_notes.recording_notes import (
+    read_recording_notes,
+    remove_recording_notes,
+    write_recording_notes,
+)
 from meeting_notes.audio_test_screen import AudioTestScreen
 
 # Initialize logging
@@ -235,6 +240,23 @@ class RecordingView(Container):
         elif event.key == "p" and not self._has_focused_input():
             event.prevent_default()
             self.app.action_toggle_pause()
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        if event.input.id == "meeting-title-input":
+            self._persist_notes_sidecar()
+
+    def on_text_area_changed(self, event: TextArea.Changed) -> None:
+        if event.text_area.id == "user-notes-input":
+            self._persist_notes_sidecar()
+
+    def _persist_notes_sidecar(self) -> None:
+        """Write the current inputs atomically while the recording is live."""
+        try:
+            title = self.query_one("#meeting-title-input", Input).value
+            notes = self.query_one("#user-notes-input", TextArea).text
+            self.app.persist_recording_notes(title, notes)
+        except Exception:
+            logger.debug("Could not persist live recording notes", exc_info=True)
 
     def _has_focused_input(self) -> bool:
         try:
@@ -929,6 +951,7 @@ class MeetingNotesApp(App):
         # captured sink.
         self._routing_refresh_interval = None
         self.recording_start_time = None
+        self._active_recording_path: Optional[Path] = None
         self.all_note_paths = []  # Store all note paths for filtering
         self._level_meter: Optional[MicLevelMeter] = None
         self._system_level_meter: Optional[MicLevelMeter] = None
@@ -980,6 +1003,27 @@ class MeetingNotesApp(App):
             logger.info("Startup cleanup removed %d file(s): %s", len(removed), removed)
         else:
             logger.debug("Startup cleanup did not remove any recordings from %s", recordings_dir)
+
+    def persist_recording_notes(self, title: str, notes: str) -> None:
+        """Atomically checkpoint live title/notes beside the active recording WAV."""
+        if not self.is_recording or self._active_recording_path is None:
+            return
+        try:
+            write_recording_notes(self._active_recording_path, title=title, notes=notes)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Failed to persist recording notes sidecar: %s", exc)
+
+    def _load_final_recording_notes(self, title: str | None, notes: str) -> tuple[str | None, str]:
+        """Flush and read the durable sidecar before handing notes to processing."""
+        if self._active_recording_path is None:
+            return title, notes
+        self.persist_recording_notes(title or "", notes)
+        try:
+            snapshot = read_recording_notes(self._active_recording_path)
+            return snapshot.title.strip() or None, snapshot.notes
+        except (FileNotFoundError, ValueError) as exc:
+            logger.warning("Could not reload recording notes sidecar: %s", exc)
+            return title, notes
 
     def compose(self) -> ComposeResult:
         """Build the UI."""
@@ -1436,6 +1480,8 @@ class MeetingNotesApp(App):
                 self.recorder.start_recording()
                 self.is_recording = True
                 self.recording_start_time = time.time()
+                self._active_recording_path = getattr(self.recorder, "current_file", None)
+                self.persist_recording_notes("", "")
                 # Reset mid-recording warning state for this session
                 self._warned_misrouted_apps = set()
                 self._warned_silent_system = False
@@ -1594,6 +1640,9 @@ class MeetingNotesApp(App):
 
             # Discard recording (kills processes, deletes files, no ffmpeg mix)
             self.recorder.cancel_recording()
+            if self._active_recording_path is not None:
+                remove_recording_notes(self._active_recording_path)
+                self._active_recording_path = None
             self.is_recording = False
             self.recording_start_time = None
             logger.info("Recording cancelled successfully")
@@ -1644,6 +1693,8 @@ class MeetingNotesApp(App):
                         logger.info(f"User notes captured: {len(user_notes)} characters")
                 except Exception:
                     pass  # No title input found
+
+                meeting_title, user_notes = self._load_final_recording_notes(meeting_title, user_notes)
                 
                 # Stop timer + level meter + routing refresh
                 if self.timer_interval:
