@@ -26,7 +26,7 @@ pytest.importorskip("textual", reason="run `pip install -e .[all,dev]` to enable
 import meeting_notes.app as meeting_app  # noqa: E402
 from meeting_notes.app import ActionBar, MeetingNotesApp, RecordingView  # noqa: E402  (deliberate import-after-skip)
 from meeting_notes.config import AppConfig, load_config  # noqa: E402
-from textual.widgets import Button, Input, Static, TextArea  # noqa: E402
+from textual.widgets import Button, Footer, Input, Static, TextArea  # noqa: E402
 
 
 @pytest.mark.asyncio
@@ -128,6 +128,128 @@ async def test_recording_view_expands_notes_without_hiding_action_bar(tmp_path, 
         app.exit()
 
 
+@pytest.mark.asyncio
+async def test_recording_view_reserves_footer_and_aligns_action_bar(tmp_path, monkeypatch):
+    """Recording content uses the screen flex row; it never consumes the Footer."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.chdir(tmp_path)
+    for size in ((80, 24), (200, 60)):
+        app = MeetingNotesApp()
+        async with app.run_test(size=size) as pilot:
+            view = RecordingView()
+            await app.mount(view)
+            await pilot.pause()
+
+            footer = app.query_one(Footer)
+            notes_input = view.query_one("#user-notes-input", TextArea)
+            action_bar = view.query_one(ActionBar)
+            discard = view.query_one("#action-discard", Button)
+            assert footer.region.height > 0
+            assert action_bar.region.height == 4
+            assert action_bar.region.bottom <= footer.region.y
+            assert action_bar.region.x == notes_input.region.x
+            assert action_bar.region.right == notes_input.region.right
+            assert discard.region.right == notes_input.region.right
+
+            view.state = "paused"
+            await pilot.pause()
+            assert footer.region.height > 0
+            assert action_bar.region.bottom <= footer.region.y
+            app.exit()
+
+
+@pytest.mark.asyncio
+async def test_meter_silence_label_presentation_clears_on_signal_return(tmp_path, monkeypatch):
+    """The existing silence latch must visibly update and then immediately clear labels."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.chdir(tmp_path)
+    app = MeetingNotesApp()
+    async with app.run_test() as pilot:
+        view = RecordingView()
+        await app.mount(view)
+        await pilot.pause()
+
+        _, warned, silent = app._format_level_bar(0.0, "mic", now=100.0)
+        assert not warned
+        assert not silent
+        _, warned, silent = app._format_level_bar(0.0, "mic", now=115.0)
+        assert warned
+        assert silent
+        app._set_meter_label("mic", silent=silent)
+        label = view.query_one("#level-meter-label", Static)
+        assert str(label.render()) == "MIC SILENT?"
+        assert label.has_class("silence-warning")
+
+        _, warned, silent = app._format_level_bar(0.1, "mic", now=115.1)
+        assert not warned
+        assert not silent
+        app._set_meter_label("mic", silent=silent)
+        assert str(label.render()) == "MIC"
+        assert not label.has_class("silence-warning")
+        app.exit()
+
+
+@pytest.mark.asyncio
+async def test_routing_block_collapses_when_healthy(tmp_path, monkeypatch):
+    """Healthy routing uses no header rows; warnings expand the dedicated block."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.chdir(tmp_path)
+    app = MeetingNotesApp()
+    async with app.run_test() as pilot:
+        view = RecordingView()
+        await app.mount(view)
+        await pilot.pause()
+        routing = view.query_one("#audio-sources-list", Static)
+
+        app._render_routing_block(routing, [])
+        await pilot.pause()
+        assert not routing.display
+
+        app._render_routing_block(routing, ["[yellow]⚠ Nothing routing to the captured sink right now[/yellow]"])
+        await pilot.pause()
+        assert routing.display
+        assert "Nothing routing" in str(routing.render())
+        app.exit()
+
+
+@pytest.mark.asyncio
+async def test_routing_block_uses_existing_detection_but_hides_healthy_copy(tmp_path, monkeypatch):
+    """The routing check remains intact; only its healthy presentation collapses."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.chdir(tmp_path)
+    app = MeetingNotesApp()
+
+    class FakeRecorder:
+        resolved_system_sink = "captured-sink"
+
+        def is_paused(self):
+            return False
+
+        def is_recording(self):
+            return False
+
+    async with app.run_test() as pilot:
+        app.is_recording = True
+        app.recorder = FakeRecorder()
+        view = RecordingView()
+        await app.mount(view)
+        await pilot.pause()
+        routing = view.query_one("#audio-sources-list", Static)
+        input_on_target = type("SinkInput", (), {"sink": "42", "application": "Zoom", "media_name": ""})()
+        monkeypatch.setattr(meeting_app, "list_active_sink_inputs", lambda **_: [input_on_target])
+        monkeypatch.setattr("meeting_notes.recorder._sink_index_to_name", lambda: {"42": "captured-sink"})
+
+        app.update_audio_sources_panel()
+        await pilot.pause()
+        assert not routing.display
+
+        monkeypatch.setattr(meeting_app, "list_active_sink_inputs", lambda **_: [])
+        app.update_audio_sources_panel()
+        await pilot.pause()
+        assert routing.display
+        assert "Nothing routing" in str(routing.render())
+        app.exit()
+
 
 @pytest.mark.asyncio
 async def test_fake_recorder_starts_and_stops_without_capture_processes(tmp_path, monkeypatch):
@@ -182,6 +304,14 @@ async def test_fake_recorder_starts_and_stops_without_capture_processes(tmp_path
         assert fake.started
         assert app.is_recording
         recording_view = app.query_one(RecordingView)
+        footer = app.query_one(Footer)
+        action_bar = recording_view.query_one(ActionBar)
+        notes_input = recording_view.query_one("#user-notes-input", TextArea)
+        discard = recording_view.query_one("#action-discard", Button)
+        assert footer.region.height > 0
+        assert action_bar.region.height == 4
+        assert action_bar.region.bottom <= footer.region.y
+        assert discard.region.right == notes_input.region.right
         recording_view.query_one("#meeting-title-input", Input).value = "Fake meeting"
         recording_view.query_one("#user-notes-input", TextArea).text = "- durable note"
         await pilot.pause()

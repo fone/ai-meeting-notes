@@ -712,11 +712,12 @@ class MeetingNotesApp(App):
     $meter-ok: $success;
     $meter-warn: $warning;
     $meter-clip: $error;
+    $recording-gutter: 2;
 
     RecordingView {
         width: 100%;
-        height: 100%;
-        padding: 0 1;
+        height: 1fr;
+        padding: 0 $recording-gutter;
         background: $panel;
     }
 
@@ -726,12 +727,12 @@ class MeetingNotesApp(App):
 
     #recording-container {
         width: 100%;
-        height: 100%;
+        height: 1fr;
     }
 
     #recording-header {
         height: auto;
-        padding: 0 1;
+        padding: 0;
         border-bottom: solid $panel-lighten-1;
     }
 
@@ -761,9 +762,10 @@ class MeetingNotesApp(App):
     }
 
     #audio-sources-list {
+        display: none;
         height: auto;
         color: $text-muted;
-        padding: 0 1;
+        padding: 0;
     }
 
     #recording-meter-rows {
@@ -783,6 +785,11 @@ class MeetingNotesApp(App):
         text-style: bold;
     }
 
+    #level-meter-label.silence-warning,
+    #system-level-meter-label.silence-warning {
+        color: $meter-warn;
+    }
+
     #level-meter-bar,
     #system-level-meter-bar {
         width: 1fr;
@@ -791,7 +798,7 @@ class MeetingNotesApp(App):
 
     #recording-title-strip {
         height: 3;
-        padding: 0 1;
+        padding: 0;
         border-bottom: solid $panel-lighten-1;
         align: left middle;
     }
@@ -807,7 +814,7 @@ class MeetingNotesApp(App):
 
     #recording-notes-region {
         height: 1fr;
-        padding: 0 1;
+        padding: 0;
     }
 
     #notes-label {
@@ -822,9 +829,9 @@ class MeetingNotesApp(App):
 
     ActionBar {
         dock: bottom;
-        height: 3;
+        height: 4;
         width: 100%;
-        padding: 0 1;
+        padding: 0;
         background: $surface;
         border-top: solid $panel-lighten-1;
         align: left middle;
@@ -838,6 +845,8 @@ class MeetingNotesApp(App):
         text-style: bold;
     }
 
+    ActionBar #action-discard,
+    ActionBar #confirm-discard-no { margin-right: 0; }
     ActionBar .action-spacer { width: 1fr; }
     ActionBar .state-btn.recording { background: $primary; color: $text; }
     ActionBar .state-btn.paused { background: $success; color: $text; }
@@ -1226,6 +1235,15 @@ class MeetingNotesApp(App):
         """Return total seconds the current recording has been paused."""
         return self.recorder.get_paused_duration() if self.recorder else 0.0
 
+    def _render_routing_block(self, widget: Static, lines: list[str]) -> None:
+        """Collapse healthy routing status; show only actionable routing warnings."""
+        if lines:
+            widget.update("\n".join(lines))
+            widget.display = True
+        else:
+            widget.update("")
+            widget.display = False
+
     def update_audio_sources_panel(self) -> None:
         """Refresh the 'Audio sources' panel with what's currently playing.
 
@@ -1265,11 +1283,7 @@ class MeetingNotesApp(App):
                     elsewhere.append((label, sink_name))
 
             lines = []
-            if on_target:
-                lines.append(
-                    f"[green]✓ Capturing:[/green] {', '.join(sorted(set(on_target)))}"
-                )
-            else:
+            if not on_target:
                 lines.append(
                     "[yellow]⚠ Nothing routing to the captured sink right now[/yellow]"
                 )
@@ -1279,7 +1293,7 @@ class MeetingNotesApp(App):
                     f"{app} → {sink}" for app, sink in elsewhere[:3]
                 )
                 lines.append(f"[red]Playing elsewhere:[/red] {pairs}")
-            widget.update("\n".join(lines))
+            self._render_routing_block(widget, lines)
 
             # Surface a TOAST notification when a meeting-style app appears
             # on a non-captured sink for the first time. This is the
@@ -1318,11 +1332,26 @@ class MeetingNotesApp(App):
         except Exception as exc:  # noqa: BLE001
             logger.debug(f"update_audio_sources_panel failed: {exc}")
 
-    def _format_level_bar(self, level: float, stream: str, now: float) -> tuple[str, bool]:
-        """Update one stream's presentation state and return render text + warning."""
+    def _format_level_bar(self, level: float, stream: str, now: float) -> tuple[str, bool, bool]:
+        """Update one stream's presentation state and return meter text + silence state."""
         visual = self._meter_visuals[stream]
         warn_silence = visual.observe(level, now=now)
-        return format_meter_bar(level, visual.hold, visual.is_clipped(now=now)), warn_silence
+        return (
+            format_meter_bar(level, visual.hold, visual.is_clipped(now=now)),
+            warn_silence,
+            visual.silence_warned,
+        )
+
+    def _set_meter_label(self, stream: str, *, silent: bool) -> None:
+        """Reflect the existing silence latch in its meter label without touching capture."""
+        label_id = "#level-meter-label" if stream == "mic" else "#system-level-meter-label"
+        normal = "MIC" if stream == "mic" else "SYS"
+        try:
+            label = self.query_one(RecordingView).query_one(label_id, Static)
+            label.update(f"{normal} SILENT?" if silent else normal)
+            label.set_class(silent, "silence-warning")
+        except Exception:
+            pass
 
     def _notify_silent_stream(self, stream: str) -> None:
         label = "Microphone" if stream == "mic" else "System audio"
@@ -1361,12 +1390,13 @@ class MeetingNotesApp(App):
         if self._is_paused() or now - self._last_level_render < 0.08:
             return
         self._last_level_render = now
-        text, warn_silence = self._format_level_bar(level, "mic", now)
+        text, warn_silence, silent = self._format_level_bar(level, "mic", now)
 
         def _update():
             try:
                 view = self.query_one(RecordingView)
                 view.query_one("#level-meter-bar", Static).update(text)
+                self._set_meter_label("mic", silent=silent)
                 if warn_silence:
                     self._notify_silent_stream("mic")
             except Exception:
@@ -1387,12 +1417,13 @@ class MeetingNotesApp(App):
         if self._is_paused() or now - self._last_system_level_render < 0.08:
             return
         self._last_system_level_render = now
-        text, warn_silence = self._format_level_bar(level, "system", now)
+        text, warn_silence, silent = self._format_level_bar(level, "system", now)
 
         def _update():
             try:
                 view = self.query_one(RecordingView)
                 view.query_one("#system-level-meter-bar", Static).update(text)
+                self._set_meter_label("system", silent=silent)
                 if warn_silence:
                     self._notify_silent_stream("system")
             except Exception:
