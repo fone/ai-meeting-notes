@@ -15,13 +15,14 @@ logger = get_logger(__name__)
 class AppConfig:
     """Application configuration."""
     # AI Summarization
-    ai_provider: str = "anthropic"  # "openai", "anthropic", "openrouter", "local", or "none"
+    ai_provider: str = "anthropic"  # "openai", "anthropic", "openrouter", "ollama_cloud", "local", or "none"
     ai_model: str = "haiku"  # Model tier (varies by provider)
     
     # API Keys (or set environment variables)
     openai_api_key: str = ""  # OPENAI_API_KEY
     anthropic_api_key: str = ""  # ANTHROPIC_API_KEY
     openrouter_api_key: str = ""  # OPENROUTER_API_KEY
+    ollama_cloud_api_key: str = ""  # OLLAMA_API_KEY
     
     # Legacy (kept for backwards compatibility)
     ollama_model: str = "llama3.2:3b"
@@ -45,6 +46,8 @@ class AppConfig:
     mic_device: str = ""
     system_device: str = ""  # Output sink whose monitor we record from
     recording_retention_days: int = 30  # Auto-delete .wav files older than this on startup (0 to disable)
+    diagnostic_temp_retention_hours: int = 72  # Auto-delete temp-*.wav files older than this (0 to disable)
+    diagnostic_temp_size_cap_gib: int = 20  # Cap total temp-*.wav size at this GiB, evict oldest first (0 to disable)
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert config to dictionary."""
@@ -66,6 +69,8 @@ class AppConfig:
             data['anthropic_api_key'] = self._redact_key(data['anthropic_api_key'])
         if data.get('openrouter_api_key'):
             data['openrouter_api_key'] = self._redact_key(data['openrouter_api_key'])
+        if data.get('ollama_cloud_api_key'):
+            data['ollama_cloud_api_key'] = self._redact_key(data['ollama_cloud_api_key'])
         return data
     
     @classmethod
@@ -150,7 +155,7 @@ def validate_config(config: AppConfig) -> tuple[bool, Optional[str]]:
         (is_valid, error_message)
     """
     # Validate AI provider
-    valid_providers = ["openai", "anthropic", "openrouter", "local", "none"]
+    valid_providers = ["openai", "anthropic", "openrouter", "ollama_cloud", "local", "none"]
     if config.ai_provider not in valid_providers:
         return False, f"Invalid ai_provider: {config.ai_provider}. Must be one of {valid_providers}"
     
@@ -205,6 +210,14 @@ def validate_config(config: AppConfig) -> tuple[bool, Optional[str]]:
     if config.recording_mode not in valid_modes:
         return False, f"Invalid recording_mode: {config.recording_mode}. Must be one of {valid_modes}"
     
+    # Validate retention settings
+    if config.recording_retention_days < 0:
+        return False, f"recording_retention_days must be non-negative, got {config.recording_retention_days}"
+    if config.diagnostic_temp_retention_hours < 0:
+        return False, f"diagnostic_temp_retention_hours must be non-negative, got {config.diagnostic_temp_retention_hours}"
+    if config.diagnostic_temp_size_cap_gib < 0:
+        return False, f"diagnostic_temp_size_cap_gib must be non-negative, got {config.diagnostic_temp_size_cap_gib}"
+
     # Validate directories exist or can be created (allow defaults to be auto-created)
     notes_path = Path(config.notes_dir).expanduser().absolute()
     if config.notes_dir != "notes":

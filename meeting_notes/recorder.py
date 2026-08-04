@@ -659,7 +659,121 @@ class AudioRecorder:
         # they've started.
         self._stderr_files: List = []
 
+        # Pause state.  _paused tracks whether the child processes are
+        # currently stopped via SIGSTOP.  _paused_at records when we entered
+        # the paused state so the UI can exclude wall-clock pause time from
+        # the displayed duration.
+        self._paused: bool = False
+        self._paused_at: Optional[float] = None
+        self._total_paused_seconds: float = 0.0
+
     # ----- public API -----
+
+    def is_paused(self) -> bool:
+        """Return True if the recorder has an active recording that is paused."""
+        return self.is_recording() and self._paused
+
+    def pause_recording(self) -> None:
+        """Pause the real capture child processes with SIGSTOP.
+
+        This is a genuine process pause, not a UI-only timer freeze.  All
+        active capture children (single, mic, system, and the keep-awake
+        sentinel) are stopped so they consume no CPU and no samples are
+        written while paused.
+        """
+        if not self.is_recording():
+            raise RuntimeError("Cannot pause: not currently recording")
+        if self._paused:
+            raise RuntimeError("Cannot pause: already paused")
+
+        logger.info("Pausing recording (SIGSTOP on capture children)")
+        self._paused_at = time.monotonic()
+        self._paused = True
+
+        for label, proc in (
+            ("single", self.process),
+            ("mic", self.mic_process),
+            ("system", self.system_process),
+            ("keepawake", self._keepawake),
+        ):
+            if proc is not None and proc.poll() is None:
+                try:
+                    proc.send_signal(signal.SIGSTOP)
+                    logger.debug(f"SIGSTOP -> {label} pid={proc.pid}")
+                except ProcessLookupError:
+                    logger.debug(f"pause: {label} pid={proc.pid} already gone")
+                except Exception as exc:
+                    logger.warning(f"pause: failed to SIGSTOP {label}: {exc}")
+
+    def resume_recording(self) -> None:
+        """Resume the paused capture child processes with SIGCONT.
+
+        The total time spent paused is accumulated so callers can subtract
+        it from the wall-clock duration.
+        """
+        if not self.is_recording():
+            raise RuntimeError("Cannot resume: not currently recording")
+        if not self._paused:
+            raise RuntimeError("Cannot resume: not currently paused")
+
+        logger.info("Resuming recording (SIGCONT on capture children)")
+        self._paused = False
+
+        for label, proc in (
+            ("single", self.process),
+            ("mic", self.mic_process),
+            ("system", self.system_process),
+            ("keepawake", self._keepawake),
+        ):
+            if proc is not None and proc.poll() is None:
+                try:
+                    proc.send_signal(signal.SIGCONT)
+                    logger.debug(f"SIGCONT -> {label} pid={proc.pid}")
+                except ProcessLookupError:
+                    logger.debug(f"resume: {label} pid={proc.pid} already gone")
+                except Exception as exc:
+                    logger.warning(f"resume: failed to SIGCONT {label}: {exc}")
+
+        if self._paused_at is not None:
+            self._total_paused_seconds += time.monotonic() - self._paused_at
+            self._paused_at = None
+
+    def get_paused_duration(self) -> float:
+        """Return total seconds the recording has been paused so far.
+
+        Includes the currently-active pause interval if paused right now.
+        """
+        total = self._total_paused_seconds
+        if self._paused and self._paused_at is not None:
+            total += time.monotonic() - self._paused_at
+        return total
+
+    def _resume_stopped_children(self) -> None:
+        """Internal helper: resume any paused children before graceful stop.
+
+        pw-record/parec need to be running to flush WAV headers on SIGINT.
+        """
+        if not self._paused:
+            return
+        logger.info("Resuming stopped children before graceful stop")
+        self._paused = False
+        for label, proc in (
+            ("single", self.process),
+            ("mic", self.mic_process),
+            ("system", self.system_process),
+            ("keepawake", self._keepawake),
+        ):
+            if proc is not None and proc.poll() is None:
+                try:
+                    proc.send_signal(signal.SIGCONT)
+                    logger.debug(f"pre-stop SIGCONT -> {label} pid={proc.pid}")
+                except ProcessLookupError:
+                    logger.debug(f"pre-stop resume: {label} pid={proc.pid} already gone")
+                except Exception as exc:
+                    logger.warning(f"pre-stop resume: failed to SIGCONT {label}: {exc}")
+        if self._paused_at is not None:
+            self._total_paused_seconds += time.monotonic() - self._paused_at
+            self._paused_at = None
 
     def _resolve_system_sink(self) -> Optional[str]:
         """Decide which sink to record from, and remember it.
@@ -764,6 +878,10 @@ class AudioRecorder:
             f"Resolved sink: {self.resolved_system_sink!r}, "
             f"keep-awake: {'on' if self._keepawake else 'off'} ==="
         )
+        # Reset pause bookkeeping for a fresh recording session.
+        self._paused = False
+        self._paused_at = None
+        self._total_paused_seconds = 0.0
         return str(self.current_file)
 
     def _start_keepawake(self, sink_name: Optional[str]) -> None:
@@ -796,10 +914,15 @@ class AudioRecorder:
         """Stop recording and return the final file path.
 
         For combined mode, this also mixes the two temp WAVs with ffmpeg.
+        If the capture children are currently paused, they are resumed first
+        so the WAV writers can flush headers on SIGINT.
         """
         logger.info(f"Stopping audio recording (mode: {self.mode})")
         if not self.is_recording():
             raise RuntimeError("Not currently recording")
+
+        # Resume stopped children so they can exit cleanly and flush WAV.
+        self._resume_stopped_children()
 
         if self.mode == "combined":
             self._stop_combined()
@@ -808,17 +931,26 @@ class AudioRecorder:
 
         output_file = str(self.current_file) if self.current_file else ""
         self.current_file = None
+        self._paused = False
+        self._paused_at = None
+        self._total_paused_seconds = 0.0
         return output_file
 
     def cancel_recording(self) -> None:
         """Stop recording AND delete the captured file(s).
 
         Unlike stop_recording, this does NOT invoke ffmpeg or leave a final
-        WAV on disk.
+        WAV on disk.  Safe to call from the paused state.
         """
         logger.info("Cancelling audio recording (discarding output)")
         final = self.current_file
         temps = list(self.temp_files)
+
+        # Kill handles a child regardless of stopped/running state, but make
+        # sure we clear the paused flag and accounting so the object is clean.
+        self._paused = False
+        self._paused_at = None
+        self._total_paused_seconds = 0.0
 
         self._abort_processes()
 

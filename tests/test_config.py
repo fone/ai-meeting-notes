@@ -8,6 +8,36 @@ def test_default_recording_retention_days():
     assert cfg.recording_retention_days == 30
 
 
+def test_diagnostic_temp_policy_defaults_and_roundtrips():
+    """Diagnostic temp audio keeps 72 hours and is capped at 20 GiB by default."""
+    cfg = AppConfig()
+    assert cfg.diagnostic_temp_retention_hours == 72
+    assert cfg.diagnostic_temp_size_cap_gib == 20
+
+    saved = AppConfig.from_dict(
+        {
+            "diagnostic_temp_retention_hours": 48,
+            "diagnostic_temp_size_cap_gib": 8,
+        }
+    )
+    assert saved.diagnostic_temp_retention_hours == 48
+    assert saved.diagnostic_temp_size_cap_gib == 8
+    assert saved.to_dict()["diagnostic_temp_retention_hours"] == 48
+    assert saved.to_dict()["diagnostic_temp_size_cap_gib"] == 8
+
+
+def test_validate_rejects_negative_diagnostic_temp_policy_values():
+    invalid_configs = (
+        (AppConfig(ai_provider="none", diagnostic_temp_retention_hours=-1), "diagnostic_temp_retention_hours"),
+        (AppConfig(ai_provider="none", diagnostic_temp_size_cap_gib=-1), "diagnostic_temp_size_cap_gib"),
+    )
+    for cfg, field in invalid_configs:
+        ok, error = validate_config(cfg)
+        assert not ok
+        assert error is not None
+        assert field in error
+
+
 def test_recording_retention_days_can_be_disabled():
     """Setting retention to 0 disables cleanup."""
     cfg = AppConfig.from_dict({"recording_retention_days": 0})

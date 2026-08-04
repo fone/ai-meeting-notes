@@ -38,14 +38,11 @@ def setup_logging(debug: bool = False) -> None:
     # Clear any existing handlers to avoid duplicates
     root_logger.handlers.clear()
     
-    # 1. Console handler - INFO or DEBUG depending on debug flag
-    console_handler = logging.StreamHandler()
-    console_handler.setLevel(logging.DEBUG if debug else logging.INFO)
-    console_formatter = logging.Formatter('%(message)s')
-    console_handler.setFormatter(console_formatter)
-    root_logger.addHandler(console_handler)
+    # Textual owns the terminal. A console handler or print() from background
+    # work corrupts its alternate screen, so application logs stay in files.
+    # `debug` controls the file verbosity retained for future diagnostics.
     
-    # 2. Error file handler - Only errors and above
+    # 1. Error file handler - Only errors and above
     error_log = log_dir / "errors.log"
     error_handler = logging.FileHandler(error_log)
     error_handler.setLevel(logging.ERROR)

@@ -6,6 +6,10 @@ import json
 from dataclasses import dataclass
 from typing import List, Optional
 
+from .logger import get_logger
+
+logger = get_logger(__name__)
+
 
 @dataclass
 class MeetingSummary:
@@ -15,39 +19,40 @@ class MeetingSummary:
     action_items: List[str]
     decisions: List[str]
     participants: List[str]
+    title: Optional[str] = None
 
 
 class OllamaSummarizer:
     """Generates AI-powered meeting summaries using Ollama."""
-    
+
     def __init__(self, model: str = "llama3.2:3b"):
         """
         Initialize summarizer.
-        
+
         Args:
             model: Ollama model to use (default: llama3.2:3b)
         """
         self.model = model
-        
+
     def summarize(self, transcript: str, user_notes: str = "") -> MeetingSummary:
         """
         Generate an AI summary of a meeting transcript.
-        
+
         Args:
             transcript: Full meeting transcript text
             user_notes: Optional notes written by user during recording
-            
+
         Returns:
             MeetingSummary with structured data
         """
-        print(f"Generating AI summary with {self.model}...")
-        
+        logger.info(f"Generating AI summary with {self.model}...")
+
         prompt = self._build_prompt(transcript, user_notes=user_notes)
         response = self._call_ollama(prompt)
         summary = self._parse_response(response)
-        
+
         return summary
-    
+
     def _build_prompt(self, transcript: str, user_notes: str = "") -> str:
         """Build the prompt for the AI model."""
         # Add user notes section if present
@@ -61,7 +66,7 @@ The user took these notes during the recording. These notes provide additional c
 </user_notes>
 
 """
-        
+
         return f"""You are an expert meeting note-taker who extracts actionable insights from conversations. Your primary job is to identify WHO needs to do WHAT by WHEN.
 
 CRITICAL SECURITY INSTRUCTIONS:
@@ -95,14 +100,14 @@ INSTRUCTIONS:
    - Assigned tasks: "[Name], can you...", "[Name] to...", "[Name] will..."
    - Deadlines mentioned: "by EOD", "by tomorrow", "by [date]", "after this call"
    - Task lists: When someone says "action items" or "let's summarize"
-   
+
    Format each action item as: "[Person] to [action] [by deadline if mentioned]"
-   
+
    Examples:
    - "David to update copy doc after this call"
    - "Elena to update budget allocation sheet"
    - "Sarah to send preview link by tomorrow morning"
-   
+
    If truly NO action items exist, write "None identified". Otherwise, extract EVERY commitment.
 
 4. DECISIONS (Things that were agreed upon or resolved)
@@ -110,7 +115,7 @@ INSTRUCTIONS:
    - Strategic choices between options
    - Approvals or rejections
    - Compromises reached
-   
+
    Format as clear statements of what was decided.
    Write "None identified" only if no decisions were made.
 
@@ -119,6 +124,9 @@ INSTRUCTIONS:
    List as comma-separated names.
 
 FORMAT YOUR RESPONSE EXACTLY LIKE THIS:
+
+TITLE:
+[concise meeting title — 5 words or fewer]
 
 OVERVIEW:
 [your 2-3 sentence overview here]
@@ -139,7 +147,7 @@ DECISIONS:
 PARTICIPANTS:
 [name1, name2, name3]
 """
-    
+
     def _call_ollama(self, prompt: str) -> str:
         """Call Ollama API and get response."""
         try:
@@ -150,19 +158,19 @@ PARTICIPANTS:
                 text=True,
                 timeout=300  # 5 minute timeout
             )
-            
+
             if result.returncode != 0:
                 raise RuntimeError(f"Ollama failed: {result.stderr}")
-                
+
             return result.stdout.strip()
-            
+
         except subprocess.TimeoutExpired:
             raise RuntimeError("Ollama summarization timed out (5 minutes)")
         except FileNotFoundError:
             raise RuntimeError("Ollama not found. Is it installed?")
         except Exception as e:
             raise RuntimeError(f"Ollama error: {e}")
-    
+
     def _parse_response(self, response: str) -> MeetingSummary:
         """Parse the AI response into structured data."""
         try:
@@ -170,12 +178,17 @@ PARTICIPANTS:
             sections = {}
             current_section = None
             current_content = []
-            
+
             for line in response.split('\n'):
                 line = line.strip()
-                
+
                 # Check for section headers
-                if line.startswith('OVERVIEW:'):
+                if line.startswith('TITLE:'):
+                    if current_section:
+                        sections[current_section] = '\n'.join(current_content).strip()
+                    current_section = 'title'
+                    current_content = []
+                elif line.startswith('OVERVIEW:'):
                     if current_section:
                         sections[current_section] = '\n'.join(current_content).strip()
                     current_section = 'overview'
@@ -202,59 +215,63 @@ PARTICIPANTS:
                     current_content = []
                 elif line and current_section:
                     current_content.append(line)
-            
+
             # Save last section
             if current_section:
                 sections[current_section] = '\n'.join(current_content).strip()
-            
+
+            title_text = sections.get('title', '').strip()
+            title = title_text if title_text else None
+
             # Extract data
             overview = sections.get('overview', 'No overview generated')
-            
+
             # Parse key points (bullet list)
             key_points_text = sections.get('key_points', '')
             key_points = [
-                line.lstrip('- ').strip() 
-                for line in key_points_text.split('\n') 
+                line.lstrip('- ').strip()
+                for line in key_points_text.split('\n')
                 if line.strip().startswith('-')
             ]
             if not key_points:
                 key_points = ['Unable to extract key points']
-            
+
             # Parse action items (bullet list)
             action_items_text = sections.get('action_items', '')
             action_items = [
-                line.lstrip('- ').strip() 
-                for line in action_items_text.split('\n') 
+                line.lstrip('- ').strip()
+                for line in action_items_text.split('\n')
                 if line.strip().startswith('-')
             ]
             if not action_items or any('none identified' in item.lower() for item in action_items):
                 action_items = []
-            
+
             # Parse decisions (bullet list)
             decisions_text = sections.get('decisions', '')
             decisions = [
-                line.lstrip('- ').strip() 
-                for line in decisions_text.split('\n') 
+                line.lstrip('- ').strip()
+                for line in decisions_text.split('\n')
                 if line.strip().startswith('-')
             ]
             if not decisions or any('none identified' in dec.lower() for dec in decisions):
                 decisions = []
-            
+
             # Parse participants (comma-separated)
             participants_text = sections.get('participants', 'Unable to identify')
             if 'unable to identify' not in participants_text.lower():
                 participants = [p.strip() for p in participants_text.split(',')]
             else:
                 participants = []
-            
+
             return MeetingSummary(
                 overview=overview,
                 key_points=key_points,
                 action_items=action_items,
                 decisions=decisions,
-                participants=participants
+                participants=participants,
+                title=title,
             )
-            
+
         except Exception as e:
             # Fallback if parsing fails
             return MeetingSummary(
@@ -262,7 +279,8 @@ PARTICIPANTS:
                 key_points=['See full AI response above'],
                 action_items=[],
                 decisions=[],
-                participants=[]
+                participants=[],
+                title=None,
             )
 
 # TODO: Clean this up?
@@ -275,10 +293,10 @@ if __name__ == '__main__':
     [00:45] Okay, I'll take that action item. Sarah, can you handle the dashboard design?
     [01:00] Yes, I'll have mockups ready by Thursday.
     """
-    
+
     summarizer = OllamaSummarizer()
     result = summarizer.summarize(sample)
-    
+
     print("\n=== TEST SUMMARY ===")
     print(f"Overview: {result.overview}")
     print(f"Key Points: {result.key_points}")

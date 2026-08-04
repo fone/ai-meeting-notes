@@ -36,6 +36,7 @@ class RecordingView(Container):
     """Full-screen view shown during active recording."""
     
     elapsed_time = reactive(0)  # seconds
+    is_paused = reactive(False)
     
     def compose(self) -> ComposeResult:
         """Build the recording view UI."""
@@ -86,11 +87,18 @@ class RecordingView(Container):
                     
                     # User notes area
                     yield Static("Your Notes:", id="notes-label")
-                    yield TextArea(id="user-notes-input", language="markdown")
+                    # Plain text avoids an optional tree-sitter Markdown grammar
+                    # turning the recording screen into a runtime failure.
+                    yield TextArea(id="user-notes-input")
             
+            # Visible controls — same actions as the keyboard shortcuts.
+            with Horizontal(id="recording-controls"):
+                yield Button("⏸ Pause", id="pause-button", variant="primary")
+                yield Button("⏹ Stop & Process", id="stop-button", variant="error")
+                yield Button("⏏ Discard", id="discard-button", variant="warning")
+
             # Instruction hints at the bottom (full width)
-            yield Static("Press 's' to stop and process recording", id="stop-hint")
-            yield Static("Press 'x' to cancel and discard recording", id="cancel-hint")
+            yield Static("Press 'p' to pause/resume  |  's' to stop  |  'x' to discard", id="stop-hint")
             yield Static("Press 'Esc' to unfocus title input", id="esc-hint")
     
     def watch_elapsed_time(self, time: int) -> None:
@@ -99,6 +107,22 @@ class RecordingView(Container):
         seconds = time % 60
         timer = self.query_one("#recording-timer", Static)
         timer.update(f"{minutes:02d}:{seconds:02d}")
+
+    def watch_is_paused(self, paused: bool) -> None:
+        """Update status header and pause button label when pause state changes."""
+        status = self.query_one("#recording-status", Static)
+        pause_button = self.query_one("#pause-button", Button)
+        if paused:
+            status.update("⏸  PAUSED")
+            status.styles.color = "yellow"
+            pause_button.label = "▶ Resume"
+            pause_button.variant = "success"
+        else:
+            status.update("🔴  RECORDING")
+            status.styles.color = "red"
+            pause_button.label = "⏸ Pause"
+            pause_button.variant = "primary"
+        pause_button.refresh()
 
     def on_mount(self) -> None:
         """Move focus AWAY from input fields when the recording view mounts.
@@ -135,6 +159,18 @@ class RecordingView(Container):
             self.app.action_stop_recording()
         elif event.key == "x" and not self._has_focused_input():
             event.prevent_default()
+            self.app.action_cancel_recording()
+        elif event.key == "p" and not self._has_focused_input():
+            event.prevent_default()
+            self.app.action_toggle_pause()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        """Handle visible control buttons."""
+        if event.button.id == "pause-button":
+            self.app.action_toggle_pause()
+        elif event.button.id == "stop-button":
+            self.app.action_stop_recording()
+        elif event.button.id == "discard-button":
             self.app.action_cancel_recording()
 
     def _has_focused_input(self) -> bool:
@@ -725,9 +761,10 @@ class MeetingNotesApp(App):
         Binding("r", "start_recording", "Record", show=True),
         Binding("s", "stop_recording", "Stop", show=False, priority=True),
         Binding("x", "cancel_recording", "Cancel", show=False, priority=True),
+        Binding("p", "toggle_pause", "Pause", show=False, priority=True),
         Binding("o", "open_in_editor", "Open", show=True),
         Binding("c", "copy_to_clipboard", "Copy", show=True),
-        Binding("p", "copy_path", "Copy Path", show=True),
+        Binding("P", "copy_path", "Copy Path", show=True),
         Binding("f", "show_in_folder", "Show in Folder", show=True),
         Binding("d", "delete_meeting", "Delete", show=True),
         Binding("e", "edit_title", "Edit Title", show=True),
@@ -748,8 +785,8 @@ class MeetingNotesApp(App):
         # Validate config
         valid, error = validate_config(self.config)
         if not valid:
-            print(f"Warning: Config validation failed: {error}")
-            print("Using default values for invalid settings")
+            logger.warning(f"Config validation failed: {error}")
+            logger.warning("Using default values for invalid settings")
         
         # Initialize components with config values
         self.recorder: Optional[AudioRecorder] = None
@@ -766,6 +803,8 @@ class MeetingNotesApp(App):
             api_key = self.config.anthropic_api_key or os.getenv("ANTHROPIC_API_KEY")
         elif self.config.ai_provider == "openrouter":
             api_key = self.config.openrouter_api_key or os.getenv("OPENROUTER_API_KEY")
+        elif self.config.ai_provider == "ollama_cloud":
+            api_key = self.config.ollama_cloud_api_key or os.getenv("OLLAMA_API_KEY")
         
         self.note_maker = NoteMaker(
             output_dir=self.config.notes_dir,
@@ -812,28 +851,24 @@ class MeetingNotesApp(App):
         self._cleanup_old_recordings()
 
     def _cleanup_old_recordings(self) -> None:
-        """Delete .wav recordings older than recording_retention_days.
+        """Run the configured retention policy against the recordings directory.
 
-        No-op if retention_days <= 0 or the recordings dir doesn't exist.
-        Errors are logged but not raised — cleanup is best-effort.
+        Delegates to the pure ``recording_cleanup`` module so the rules are
+        testable without a Textual app instance.
         """
-        retention_days = getattr(self.config, "recording_retention_days", 0)
-        if retention_days <= 0:
-            return
+        from meeting_notes.recording_cleanup import CleanupPolicy, cleanup_recordings
+
+        policy = CleanupPolicy(
+            normal_retention_days=getattr(self.config, "recording_retention_days", 0),
+            temp_retention_hours=getattr(self.config, "diagnostic_temp_retention_hours", 72),
+            temp_size_cap_gib=getattr(self.config, "diagnostic_temp_size_cap_gib", 20),
+        )
         recordings_dir = Path(self.config.recordings_dir).expanduser()
-        if not recordings_dir.is_dir():
-            return
-        cutoff = datetime.now() - timedelta(days=retention_days)
-        for wav_file in recordings_dir.glob("*.wav"):
-            try:
-                if datetime.fromtimestamp(wav_file.stat().st_mtime) < cutoff:
-                    logger.info(
-                        f"Removing old recording: {wav_file.name} "
-                        f"(older than {retention_days} days)"
-                    )
-                    wav_file.unlink()
-            except Exception as e:
-                logger.warning(f"Failed to remove {wav_file.name}: {e}")
+        removed = cleanup_recordings(recordings_dir, policy)
+        if removed:
+            logger.info("Startup cleanup removed %d file(s): %s", len(removed), removed)
+        else:
+            logger.debug("Startup cleanup did not remove any recordings from %s", recordings_dir)
 
     def compose(self) -> ComposeResult:
         """Build the UI."""
@@ -1000,19 +1035,35 @@ class MeetingNotesApp(App):
         return True  # All other actions always available
     
     def update_recording_timer(self) -> None:
-        """Called every second to update recording timer."""
+        """Called every second to update recording timer.
+
+        While paused, the timer does not advance.  The total paused duration
+        reported by the recorder is subtracted from the wall-clock elapsed
+        time so the displayed and persisted duration reflect only active
+        recording time.
+        """
         if self.is_recording and self.recording_start_time:
-            elapsed = int(time.time() - self.recording_start_time)
+            elapsed = int(time.time() - self.recording_start_time - self._paused_duration())
+            elapsed = max(elapsed, 0)
             duration_str = f"{elapsed // 60:02d}:{elapsed % 60:02d}"
 
             # Update status file with current duration
-            self._write_status_file("recording", duration=duration_str)
+            status = "paused" if self._is_paused() else "recording"
+            self._write_status_file(status, duration=duration_str)
 
             try:
                 recording_view = self.query_one(RecordingView)
                 recording_view.elapsed_time = elapsed
             except Exception:
                 pass  # View might not be mounted yet
+
+    def _is_paused(self) -> bool:
+        """Return True if the recorder is currently paused."""
+        return bool(self.recorder and self.recorder.is_paused())
+
+    def _paused_duration(self) -> float:
+        """Return total seconds the current recording has been paused."""
+        return self.recorder.get_paused_duration() if self.recorder else 0.0
 
     def update_audio_sources_panel(self) -> None:
         """Refresh the 'Audio sources' panel with what's currently playing.
@@ -1021,8 +1072,11 @@ class MeetingNotesApp(App):
         and shows app names. If nothing is routing to our sink, we say so
         loudly — that's the user-actionable signal that the system-audio
         leg won't capture other meeting participants.
+
+        This refresh is skipped while paused: no audio is being captured,
+        so routing updates would show stale or misleading activity.
         """
-        if not self.is_recording or self.recorder is None:
+        if not self.is_recording or self.recorder is None or self._is_paused():
             return
 
         try:
@@ -1152,7 +1206,7 @@ class MeetingNotesApp(App):
         self._maybe_log_peaks()
 
         now = time.monotonic()
-        if now - self._last_level_render < 0.08:
+        if now - self._last_level_render < 0.08 or self._is_paused():
             return
         self._last_level_render = now
 
@@ -1177,7 +1231,7 @@ class MeetingNotesApp(App):
         self._maybe_log_peaks()
 
         now = time.monotonic()
-        if now - self._last_system_level_render < 0.08:
+        if now - self._last_system_level_render < 0.08 or self._is_paused():
             return
         self._last_system_level_render = now
 
@@ -1255,7 +1309,7 @@ class MeetingNotesApp(App):
                     logger.debug(f"level-meter: error stopping {attr}: {exc}")
                 setattr(self, attr, None)
 
-    def action_start_recording(self) -> None:
+    async def action_start_recording(self) -> None:
         """Start recording and switch to full-screen recording view."""
         logger.info(
             f"action_start_recording: mode={self.config.recording_mode}, "
@@ -1282,7 +1336,7 @@ class MeetingNotesApp(App):
                 main_panels = self.query_one("#main-panels", Container)
                 main_panels.display = False
                 recording_view = RecordingView()
-                self.mount(recording_view)
+                await self.mount(recording_view)
 
                 # Update status file for Waybar
                 self._write_status_file("recording", duration="00:00")
@@ -1324,7 +1378,15 @@ class MeetingNotesApp(App):
 
                 # Update footer bindings
                 self.refresh_bindings()
-                
+
+                # Wire the recording view's pause state to the recorder so
+                # the UI stays consistent if we launch already paused.
+                try:
+                    recording_view = self.query_one(RecordingView)
+                    recording_view.is_paused = self._is_paused()
+                except Exception:
+                    pass
+
             except Exception as e:
                 logger.error(f"Failed to start recording: {e}", exc_info=True)
                 self.notify(f"Failed to start recording: {e}", severity="error")
@@ -1335,7 +1397,40 @@ class MeetingNotesApp(App):
                     main_panels.display = True
                 except Exception:
                     pass
-    
+
+    def action_toggle_pause(self) -> None:
+        """Toggle pause/resume on the active recording."""
+        if not self.is_recording or not self.recorder or not self.recorder.is_recording():
+            return
+
+        try:
+            if self.recorder.is_paused():
+                self.recorder.resume_recording()
+                # The meter subprocesses were stopped on pause so nothing
+                # continues sampling while the recording is halted.
+                self._start_level_meter()
+                logger.info("Recording resumed from pause")
+                self.notify("Recording resumed", severity="information")
+            else:
+                self.recorder.pause_recording()
+                # Do not leave diagnostic meter processes capturing in the
+                # background while the user believes recording is paused.
+                self._stop_level_meter()
+                logger.info("Recording paused")
+                self.notify("Recording paused", severity="warning")
+
+            try:
+                recording_view = self.query_one(RecordingView)
+                recording_view.is_paused = self.recorder.is_paused()
+            except Exception:
+                pass
+
+            # Update the status file immediately so Waybar reflects the state.
+            self.update_recording_timer()
+        except Exception as e:
+            logger.error(f"Failed to toggle pause: {e}", exc_info=True)
+            self.notify(f"Failed to pause/resume: {e}", severity="error")
+
     def action_cancel_recording(self) -> None:
         """Cancel recording and discard without processing."""
         logger.info("Cancelling recording")
@@ -1413,6 +1508,16 @@ class MeetingNotesApp(App):
                     self._routing_refresh_interval.stop()
                     self._routing_refresh_interval = None
                 self._stop_level_meter()
+
+                # If the user pauses right before hitting stop, the recorder
+                # internally resumes children so WAV headers flush.  Mark the
+                # UI unpaused too so the elapsed timer includes the final
+                # burst accurately and the view shows RECORDING briefly.
+                try:
+                    recording_view = self.query_one(RecordingView)
+                    recording_view.is_paused = False
+                except Exception:
+                    pass
 
                 # Stop recording
                 audio_path = self.recorder.stop_recording()
@@ -2028,6 +2133,8 @@ class MeetingNotesApp(App):
                 api_key = self.config.anthropic_api_key or os.getenv("ANTHROPIC_API_KEY")
             elif self.config.ai_provider == "openrouter":
                 api_key = self.config.openrouter_api_key or os.getenv("OPENROUTER_API_KEY")
+            elif self.config.ai_provider == "ollama_cloud":
+                api_key = self.config.ollama_cloud_api_key or os.getenv("OLLAMA_API_KEY")
             
             self.note_maker = NoteMaker(
                 output_dir=self.config.notes_dir,

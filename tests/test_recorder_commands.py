@@ -15,6 +15,8 @@ import pytest
 
 from meeting_notes import recorder as rec_module
 from meeting_notes.recorder import AudioRecorder, resolve_monitor_source
+import signal
+from typing import Optional
 
 
 class _FakeProc:
@@ -346,3 +348,124 @@ def test_combined_mode_uses_parec_for_system_and_pwrecord_for_mic(
     parec_cmd = next(c for c in capture_cmds if c[0] == "parec")
     assert any(a == "--device=thesink.monitor" for a in parec_cmd)
     assert "--file-format=wav" in parec_cmd
+
+
+def _make_capture_proc(monkeypatch, tmp_path, mode="mic"):
+    """Start a recorder with a single fake process and return (rec, proc)."""
+    created: List[_FakeProc] = []
+
+    def fake_popen(cmd, *args, **kwargs):
+        proc = _FakeProc(cmd)
+        created.append(proc)
+        return proc
+
+    monkeypatch.setattr(rec_module.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(rec_module.time, "sleep", lambda *_: None)
+    monkeypatch.setattr(rec_module.shutil, "which", lambda name: "/usr/bin/pw-record" if name == "pw-record" else None)
+
+    rec = AudioRecorder(output_dir=str(tmp_path), mode=mode)
+    rec.start_recording("test.wav")
+    assert rec.is_recording()
+    assert len(created) == 1
+    return rec, created[0]
+
+
+def test_pause_sends_sigstop_to_capture_child(tmp_path, monkeypatch):
+    rec, proc = _make_capture_proc(monkeypatch, tmp_path)
+    rec.pause_recording()
+
+    assert rec.is_paused()
+    assert signal.SIGSTOP in proc.signaled
+    assert rec.get_paused_duration() >= 0.0
+
+
+def test_resume_sends_sigcont_and_accumulates_paused_time(tmp_path, monkeypatch):
+    rec, proc = _make_capture_proc(monkeypatch, tmp_path)
+    rec.pause_recording()
+    before = rec.get_paused_duration()
+    rec.resume_recording()
+
+    assert not rec.is_paused()
+    assert signal.SIGCONT in proc.signaled
+    assert rec.get_paused_duration() >= before
+    assert not rec._paused
+
+
+def test_stop_from_paused_resumes_then_stops(tmp_path, monkeypatch):
+    rec, proc = _make_capture_proc(monkeypatch, tmp_path)
+    rec.pause_recording()
+    assert signal.SIGSTOP in proc.signaled
+
+    # stop_recording should SIGCONT before SIGINT so the WAV flushes.
+    rec.stop_recording()
+
+    assert signal.SIGCONT in proc.signaled
+    assert signal.SIGINT in proc.signaled
+    assert not rec.is_recording()
+    assert not rec.is_paused()
+
+
+def test_cancel_from_paused_is_safe_and_clears_state(tmp_path, monkeypatch):
+    rec, proc = _make_capture_proc(monkeypatch, tmp_path)
+    rec.pause_recording()
+    assert rec.is_paused()
+
+    rec.cancel_recording()
+
+    # Cancel kills the child regardless of stopped state and clears pause state.
+    assert proc.killed
+    assert not rec.is_recording()
+    assert not rec.is_paused()
+    assert rec.get_paused_duration() == 0.0
+
+
+def test_pause_while_not_recording_raises(tmp_path, monkeypatch):
+    monkeypatch.setattr(rec_module.shutil, "which", lambda name: "/usr/bin/pw-record" if name == "pw-record" else None)
+    rec = AudioRecorder(output_dir=str(tmp_path), mode="mic")
+    with pytest.raises(RuntimeError, match="not currently recording"):
+        rec.pause_recording()
+
+
+def test_resume_without_pause_raises(tmp_path, monkeypatch):
+    rec, _proc = _make_capture_proc(monkeypatch, tmp_path)
+    with pytest.raises(RuntimeError, match="not currently paused"):
+        rec.resume_recording()
+
+
+def test_double_pause_raises(tmp_path, monkeypatch):
+    rec, _proc = _make_capture_proc(monkeypatch, tmp_path)
+    rec.pause_recording()
+    with pytest.raises(RuntimeError, match="already paused"):
+        rec.pause_recording()
+
+
+def test_pause_combined_stops_both_children_and_keepawake(tmp_path, monkeypatch):
+    """Combined mode pauses mic, system, and keep-awake children."""
+    monkeypatch.setattr(
+        rec_module.shutil,
+        "which",
+        lambda name: {
+            "pw-record": "/usr/bin/pw-record",
+            "parec": "/usr/bin/parec",
+        }.get(name),
+    )
+    monkeypatch.setattr(rec_module, "_get_default", lambda kind: "thesink" if kind == "sink" else None)
+    monkeypatch.setattr(rec_module.time, "sleep", lambda *_: None)
+
+    procs: List[_FakeProc] = []
+
+    def fake_popen(cmd, *args, **kwargs):
+        proc = _FakeProc(cmd)
+        procs.append(proc)
+        return proc
+
+    monkeypatch.setattr(rec_module.subprocess, "Popen", fake_popen)
+
+    rec = AudioRecorder(output_dir=str(tmp_path), mode="combined")
+    rec.start_recording("test.wav")
+    assert len(procs) == 3, "combined should spawn mic, system, and keep-awake"
+
+    rec.pause_recording()
+    assert rec.is_paused()
+    for proc in procs:
+        assert signal.SIGSTOP in proc.signaled, f"{proc.cmd[0]} should have been SIGSTOPped"

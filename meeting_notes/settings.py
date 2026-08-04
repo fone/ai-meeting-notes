@@ -716,6 +716,42 @@ class SettingsScreen(Screen):
             classes="settings-hint",
         ))
 
+        # Diagnostic temp-audio retention
+        widgets.append(Static(""))
+        widgets.append(Static("🗑️  Diagnostic Temp-Audio Retention", classes="settings-section-title"))
+        widgets.append(Static(
+            "Failed or cancelled combined-mode captures can leave diagnostic "
+            "temp-*.wav files behind. These settings cap their growth while "
+            "leaving a short recovery window.",
+            classes="settings-hint",
+        ))
+        widgets.append(Static(""))
+
+        widgets.append(Static("Temp retention (hours)", classes="settings-label"))
+        temp_retention_input = Input(
+            value=str(self.config.get("diagnostic_temp_retention_hours", 72)),
+            id="diagnostic-temp-retention-input",
+            classes="settings-input",
+        )
+        widgets.append(temp_retention_input)
+        widgets.append(Static(
+            "Delete temp-*.wav files older than this. 0 disables age cleanup.",
+            classes="settings-hint",
+        ))
+
+        widgets.append(Static("Temp storage cap (GiB)", classes="settings-label"))
+        temp_cap_input = Input(
+            value=str(self.config.get("diagnostic_temp_size_cap_gib", 20)),
+            id="diagnostic-temp-cap-input",
+            classes="settings-input",
+        )
+        widgets.append(temp_cap_input)
+        widgets.append(Static(
+            "Keep temp-*.wav files under this total size by deleting oldest "
+            "first. 0 disables the cap.",
+            classes="settings-hint",
+        ))
+
         return widgets
     
     def render_editor_section(self) -> list:
@@ -951,6 +987,31 @@ class SettingsScreen(Screen):
         except Exception:
             pass
         
+        # Update diagnostic temp-audio retention values. A missing input means
+        # another Settings section is visible; malformed input is a real error,
+        # not something to silently discard.
+        try:
+            temp_retention_input = self.query_one("#diagnostic-temp-retention-input", Input)
+        except Exception:
+            temp_retention_input = None
+        if temp_retention_input is not None:
+            try:
+                self.config["diagnostic_temp_retention_hours"] = int(temp_retention_input.value.strip())
+            except ValueError:
+                self.app.notify("✗ Temp retention must be a whole number of hours", severity="error")
+                return
+
+        try:
+            temp_cap_input = self.query_one("#diagnostic-temp-cap-input", Input)
+        except Exception:
+            temp_cap_input = None
+        if temp_cap_input is not None:
+            try:
+                self.config["diagnostic_temp_size_cap_gib"] = int(temp_cap_input.value.strip())
+            except ValueError:
+                self.app.notify("✗ Temp storage cap must be a whole number of GiB", severity="error")
+                return
+
         # Create config object and validate
         new_config = AppConfig.from_dict(self.config)
         valid, error = validate_config(new_config)
