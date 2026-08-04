@@ -61,6 +61,7 @@ async def test_recording_view_action_bar_requires_discard_confirmation(tmp_path,
     async with app.run_test(size=(80, 24)) as pilot:
         view = RecordingView()
         await app.mount(view)
+        view.state = "recording"
         await pilot.pause()
 
         action_bar = view.query_one(ActionBar)
@@ -138,6 +139,7 @@ async def test_recording_view_reserves_footer_and_aligns_action_bar(tmp_path, mo
         async with app.run_test(size=size) as pilot:
             view = RecordingView()
             await app.mount(view)
+            view.state = "recording"
             await pilot.pause()
 
             footer = app.query_one(Footer)
@@ -315,6 +317,9 @@ async def test_fake_recorder_starts_and_stops_without_capture_processes(tmp_path
             self.running = False
             return "fake-recording.wav"
 
+        def _resolve_system_sink(self):
+            return None
+
         def get_audio_device_info(self):
             return {"mode": "mic", "mic_device": "fake-mic"}
 
@@ -327,6 +332,10 @@ async def test_fake_recorder_starts_and_stops_without_capture_processes(tmp_path
         monkeypatch.setattr(app, "update_audio_sources_panel", lambda: None)
         monkeypatch.setattr(app, "process_recording", lambda *args: processed.append(args))
         await app.action_start_recording()
+        await pilot.pause()
+        assert not fake.started
+        assert app.is_preflighting
+        app.action_begin_recording()
         await pilot.pause()
         assert fake.started
         assert app.is_recording

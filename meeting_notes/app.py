@@ -109,6 +109,8 @@ class ActionBar(Horizontal):
     """The recording screen's only command surface."""
 
     def compose(self) -> ComposeResult:
+        yield Button("●  Start Recording  ·  s", id="action-begin", classes="primary-btn")
+        yield Button("←  Back  ·  x", id="action-back", classes="state-btn preflight")
         yield Button("⏸  Pause  ·  p", id="action-toggle", classes="state-btn recording")
         yield Button("⏹  Stop & Process  ·  s", id="action-stop", classes="primary-btn")
         yield Static("", classes="action-spacer")
@@ -120,6 +122,9 @@ class ActionBar(Horizontal):
     def set_state(self, state: str) -> None:
         """Render the parent view's state without owning state itself."""
         confirming = state == "confirming_discard"
+        preflight = state == "preflight"
+        begin = self.query_one("#action-begin", Button)
+        back = self.query_one("#action-back", Button)
         toggle = self.query_one("#action-toggle", Button)
         stop = self.query_one("#action-stop", Button)
         discard = self.query_one("#action-discard", Button)
@@ -129,8 +134,10 @@ class ActionBar(Horizontal):
 
         toggle.label = "▶  Resume  ·  p" if state == "paused" else "⏸  Pause  ·  p"
         toggle.set_classes("state-btn paused" if state == "paused" else "state-btn recording")
+        begin.display = preflight
+        back.display = preflight
         for widget in (toggle, stop, discard):
-            widget.display = not confirming
+            widget.display = not confirming and not preflight
         for widget in (confirmation, confirm_yes, confirm_no):
             widget.display = confirming
 
@@ -138,7 +145,11 @@ class ActionBar(Horizontal):
         event.stop()
         view = self.app.query_one(RecordingView)
         button_id = event.button.id
-        if button_id == "action-toggle":
+        if button_id == "action-begin":
+            self.app.action_begin_recording()
+        elif button_id == "action-back":
+            self.app.action_exit_preflight()
+        elif button_id == "action-toggle":
             self.app.action_toggle_pause()
         elif button_id == "action-stop":
             self.app.action_stop_recording()
@@ -154,7 +165,7 @@ class RecordingView(Container):
     """Single-column, state-driven view shown during an active recording."""
 
     elapsed_time = reactive(0)
-    state = reactive("recording")
+    state = reactive("preflight")
 
     def compose(self) -> ComposeResult:
         with Vertical(id="recording-container"):
@@ -185,11 +196,12 @@ class RecordingView(Container):
         self.query_one("#recording-timer", Static).update(f"{hours:02d}:{minutes:02d}:{seconds:02d}")
 
     def watch_state(self, state: str) -> None:
-        self.remove_class("recording", "paused", "confirming-discard")
+        self.remove_class("preflight", "recording", "paused", "confirming-discard")
         self.add_class(state.replace("_", "-"))
         try:
             status = self.query_one("#recording-status", Static)
             status.update({
+                "preflight": "●  READY TO RECORD",
                 "recording": "●  RECORDING",
                 "paused": "⏸  PAUSED",
                 "confirming_discard": "●  RECORDING",
@@ -207,6 +219,9 @@ class RecordingView(Container):
             pass
 
     def request_discard(self) -> None:
+        if self.state == "preflight":
+            self.app.action_exit_preflight()
+            return
         self.state = "confirming_discard"
         try:
             self.screen.set_focus(None)
@@ -710,6 +725,7 @@ class MeetingNotesApp(App):
     /* Recording-screen tokens. Keep this visual system local and inline. */
     $rec-active: $error;
     $rec-paused: $warning;
+    $rec-ready: $primary;
     $meter-ok: $success;
     $meter-warn: $warning;
     $meter-clip: $error;
@@ -722,6 +738,7 @@ class MeetingNotesApp(App):
         background: $panel;
     }
 
+    RecordingView.preflight { border: solid $rec-ready; }
     RecordingView.recording { border: solid $rec-active; }
     RecordingView.paused { border: solid $rec-paused; }
     RecordingView.confirming-discard { border: solid $rec-active; }
@@ -748,6 +765,7 @@ class MeetingNotesApp(App):
         color: $rec-active;
     }
 
+    RecordingView.preflight #recording-status { color: $rec-ready; }
     RecordingView.paused #recording-status { color: $rec-paused; }
 
     #recording-timer {
@@ -955,6 +973,7 @@ class MeetingNotesApp(App):
         self.notes_dir = Path(self.config.notes_dir).expanduser()
         self.notes_dir.mkdir(parents=True, exist_ok=True)
         self.is_recording = False
+        self.is_preflighting = False
         self.timer_interval = None
         # Refreshes the "audio sources" panel in the recording view so
         # the user can see in real time which apps are routing to the
@@ -1191,10 +1210,11 @@ class MeetingNotesApp(App):
     
     def check_action(self, action: str, parameters: tuple) -> bool | None:
         """Control which actions are available based on recording state."""
+        active_recording_ui = self.is_recording or self.is_preflighting
         if action == "start_recording":
-            return not self.is_recording
+            return not active_recording_ui
         elif action in ["stop_recording", "request_discard", "cancel_recording"]:
-            return self.is_recording
+            return active_recording_ui
         elif action == "audio_test":
             # Hide from the footer while recording — running the test mid-meeting
             # would fight the recorder for the same source.
@@ -1204,7 +1224,7 @@ class MeetingNotesApp(App):
             "delete_meeting", "edit_title", "view_transcript", "manage_tags",
         }:
             # These operate on a completed meeting and are inert mid-recording.
-            return not self.is_recording
+            return not active_recording_ui
         return True  # Settings and Quit remain available while recording
     
     def update_recording_timer(self) -> None:
@@ -1517,7 +1537,80 @@ class MeetingNotesApp(App):
                 setattr(self, attr, None)
 
     async def action_start_recording(self) -> None:
-        """Start recording and switch to full-screen recording view."""
+        """Open preflight diagnostics without creating a recording artifact."""
+        if self.is_recording or self.is_preflighting or not self.recorder:
+            return
+        try:
+            if self.config.recording_mode in ("system", "combined"):
+                # Select the same current sink the recorder will use, then
+                # resolve again when capture starts to avoid stale routing.
+                self.recorder._resolve_system_sink()
+
+            main_panels = self.query_one("#main-panels", Container)
+            main_panels.display = False
+            recording_view = RecordingView()
+            await self.mount(recording_view)
+            recording_view.state = "preflight"
+            self.is_preflighting = True
+            self._routing_warning_visible = False
+            self._routing_healthy_since = None
+
+            device_info = self.recorder.get_audio_device_info()
+            mode_display = {
+                "mic": "🎤 Microphone Only",
+                "system": "🔊 System Audio Only",
+                "combined": "🎤🔊 Microphone + System Audio",
+            }
+            info_lines = [mode_display.get(device_info["mode"], device_info["mode"])]
+            if "mic_device" in device_info:
+                info_lines.append(
+                    f"Mic: {resolve_device_name(device_info['mic_device'], kind='source')}"
+                )
+            if "system_device" in device_info:
+                sink = self.recorder.resolved_system_sink or device_info["system_device"]
+                info_lines.append(f"System: {resolve_device_name(sink or '', kind='sink')}")
+            recording_view.query_one("#audio-device-info", Static).update("\n".join(info_lines))
+
+            self._start_level_meter()
+            self._routing_refresh_interval = self.set_interval(
+                3.0, self.update_audio_sources_panel
+            )
+            self.update_audio_sources_panel()
+            self._write_status_file("idle")
+            self.refresh_bindings()
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Failed to open recording preflight: %s", exc, exc_info=True)
+            self.is_preflighting = False
+            try:
+                self._stop_level_meter()
+                self.query_one(RecordingView).remove()
+                self.query_one("#main-panels", Container).display = True
+            except Exception:
+                pass
+            self.notify(f"Failed to open recording preflight: {exc}", severity="error")
+
+    def action_exit_preflight(self) -> None:
+        """Close diagnostics without ever starting or discarding a recording."""
+        if not self.is_preflighting or self.is_recording:
+            return
+        if self._routing_refresh_interval:
+            self._routing_refresh_interval.stop()
+            self._routing_refresh_interval = None
+        self._stop_level_meter()
+        self.is_preflighting = False
+        try:
+            self.query_one(RecordingView).remove()
+            self.query_one("#main-panels", Container).display = True
+        except Exception:
+            pass
+        self._write_status_file("idle")
+        self.refresh_bindings()
+        self.notify("Recording preflight closed", severity="information")
+
+    def action_begin_recording(self) -> None:
+        """Begin capture from preflight after diagnostics have been checked."""
+        if not self.is_preflighting or not self.recorder:
+            return
         logger.info(
             f"action_start_recording: mode={self.config.recording_mode}, "
             f"mic_device={self.config.mic_device!r}, "
@@ -1530,6 +1623,7 @@ class MeetingNotesApp(App):
                 # without having torn down the main UI.
                 self.recorder.start_recording()
                 self.is_recording = True
+                self.is_preflighting = False
                 self.recording_start_time = time.time()
                 self._active_recording_path = getattr(self.recorder, "current_file", None)
                 self.persist_recording_notes("", "")
@@ -1543,11 +1637,9 @@ class MeetingNotesApp(App):
                     f"resolved_system_sink={self.recorder.resolved_system_sink!r}"
                 )
 
-                # Now swap UI to recording view
-                main_panels = self.query_one("#main-panels", Container)
-                main_panels.display = False
-                recording_view = RecordingView()
-                await self.mount(recording_view)
+                # Preflight already owns the full-screen view. Keep it mounted
+                # and transition it only after capture is running.
+                recording_view = self.query_one(RecordingView)
 
                 # Update status file for Waybar
                 self._write_status_file("recording", duration="00:00")
@@ -1588,9 +1680,10 @@ class MeetingNotesApp(App):
                 # Refresh the "what is playing right now" list every 3 seconds
                 # so the user can see when meeting participants start/stop
                 # being captured.
-                self._routing_refresh_interval = self.set_interval(
-                    3.0, self.update_audio_sources_panel
-                )
+                if self._routing_refresh_interval is None:
+                    self._routing_refresh_interval = self.set_interval(
+                        3.0, self.update_audio_sources_panel
+                    )
                 self.update_audio_sources_panel()  # populate immediately
 
                 # Update footer bindings
@@ -1608,10 +1701,10 @@ class MeetingNotesApp(App):
                 logger.error(f"Failed to start recording: {e}", exc_info=True)
                 self.notify(f"Failed to start recording: {e}", severity="error")
                 self.is_recording = False
-                # Restore main panels if something failed
+                self.is_preflighting = True
+                self.recording_start_time = None
                 try:
-                    main_panels = self.query_one("#main-panels", Container)
-                    main_panels.display = True
+                    self.query_one(RecordingView).state = "preflight"
                 except Exception:
                     pass
 
@@ -1649,7 +1742,10 @@ class MeetingNotesApp(App):
             self.notify(f"Failed to pause/resume: {e}", severity="error")
 
     def action_request_discard(self) -> None:
-        """Show the in-view discard confirmation without destroying the recording."""
+        """Back out of preflight, or show active-recording discard confirmation."""
+        if self.is_preflighting:
+            self.action_exit_preflight()
+            return
         if not self.is_recording:
             return
         try:
@@ -1725,7 +1821,10 @@ class MeetingNotesApp(App):
             self.notify(f"Failed to cancel recording: {e}", severity="error")
     
     def action_stop_recording(self) -> None:
-        """Stop recording, get title if provided, and process."""
+        """Start from preflight, or stop and process an active recording."""
+        if self.is_preflighting:
+            self.action_begin_recording()
+            return
         logger.info("Stopping recording")
         if self.recorder and self.recorder.is_recording():
             try:
