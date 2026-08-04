@@ -1296,7 +1296,11 @@ class MeetingNotesApp(App):
         This refresh is skipped while paused: no audio is being captured,
         so routing updates would show stale or misleading activity.
         """
-        if not self.is_recording or self.recorder is None or self._is_paused():
+        if (
+            (not self.is_recording and not self.is_preflighting)
+            or self.recorder is None
+            or self._is_paused()
+        ):
             return
 
         try:
