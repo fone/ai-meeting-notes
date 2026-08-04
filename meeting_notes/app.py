@@ -174,7 +174,7 @@ class RecordingView(Container):
                 yield Static("Meeting title", id="title-label")
                 yield Input(placeholder="Optional title…", id="meeting-title-input")
             with Vertical(id="recording-notes-region"):
-                yield Static("Notes", id="notes-label")
+                yield Static("Notes · [ ] action · ? question · #tag · [MM:SS] marker", id="notes-label")
                 yield TextArea(id="user-notes-input")
             yield ActionBar()
 

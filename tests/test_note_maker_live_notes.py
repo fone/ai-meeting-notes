@@ -1,0 +1,31 @@
+from datetime import datetime
+
+from meeting_notes.note_maker import NoteMaker
+from meeting_notes.summarizer import MeetingSummary
+
+
+def test_note_maker_renders_structured_live_notes_and_merges_tags(tmp_path):
+    maker = NoteMaker(
+        output_dir=str(tmp_path / "notes"),
+        transcripts_dir=str(tmp_path / "transcripts"),
+        ai_provider="none",
+    )
+    summary = {"word_count": 4, "keywords": [], "questions": []}
+
+    content = maker._generate_note_file(
+        title="Client review",
+        date=datetime(2026, 8, 4, 12, 0),
+        duration=60,
+        summary=summary,
+        transcript_filename="client.txt",
+        recording_file="client.wav",
+        metadata={},
+        user_notes="- [ ] Send proposal\n? Who signs?\n[02:30] Budget\n#meeting #client-a",
+    )
+
+    assert "tags: [meeting, auto-generated, client-a]" in content
+    assert "## Live Notes" in content
+    assert "- [ ] Send proposal" in content
+    assert "- Who signs?" in content
+    assert "**[02:30]** Budget" in content
+    assert "## User Notes" not in content

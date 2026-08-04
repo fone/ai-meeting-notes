@@ -7,6 +7,7 @@ from collections import Counter
 import re
 
 from .logger import get_logger
+from .live_notes import format_live_notes, parse_live_notes
 
 logger = get_logger(__name__)
 
@@ -303,6 +304,9 @@ Recording: {recording_file}
         day_name = day_names[date.weekday()]
         month_dir = date.strftime("%m-%B")
         daily_note_path = f"Daily/{date.strftime('%Y')}/{month_dir}/{date.strftime('%Y-%m-%d')}-{day_name}"
+        live_notes = parse_live_notes(user_notes)
+        tags = list(dict.fromkeys(["meeting", "auto-generated", *live_notes.tags]))
+        tags_frontmatter = ", ".join(tags)
 
         frontmatter = f"""---
 title: "{title}"
@@ -310,7 +314,7 @@ date: {date.strftime("%Y-%m-%d")}
 time: "{date.strftime("%H:%M")}"
 duration_seconds: {int(duration)}
 word_count: {summary['word_count']}
-tags: [meeting, auto-generated]
+tags: [{tags_frontmatter}]
 recording_file: "{recording_file}"
 transcript_file: "{transcript_filename}"
 daily_note: "[[{daily_note_path}]]"
@@ -338,14 +342,10 @@ This meeting covered several topics. Key themes included: {', '.join(summary['ke
 
 """
 
-        # Add user notes section if present
-        user_notes_section = ""
-        if user_notes:
-            user_notes_section = f"""## User Notes
-
-{user_notes}
-
-"""
+        # Render user-captured notes into stable sections without touching AI output.
+        live_notes_section = format_live_notes(live_notes)
+        if live_notes_section:
+            live_notes_section += "\n\n"
 
         content = f"""{frontmatter}
 # {title}
@@ -354,7 +354,7 @@ This meeting covered several topics. Key themes included: {', '.join(summary['ke
 **Duration:** {duration_str}
 **Words:** {summary['word_count']:,}
 
-{user_notes_section}{summary_section}
+{live_notes_section}{summary_section}
 
 ---
 
