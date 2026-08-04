@@ -32,149 +32,144 @@ setup_logging(debug=False)
 logger = get_logger(__name__)
 
 
-class RecordingView(Container):
-    """Full-screen view shown during active recording."""
-    
-    elapsed_time = reactive(0)  # seconds
-    is_paused = reactive(False)
-    
+class ActionBar(Horizontal):
+    """The recording screen's only command surface."""
+
     def compose(self) -> ComposeResult:
-        """Build the recording view UI."""
+        yield Button("⏸  Pause  ·  p", id="action-toggle", classes="state-btn recording")
+        yield Button("⏹  Stop & Process  ·  s", id="action-stop", classes="primary-btn")
+        yield Static("", classes="action-spacer")
+        yield Button("⏏  Discard  ·  x", id="action-discard", classes="danger-btn")
+        yield Static("Discard recording?", id="discard-confirmation", classes="discard-confirmation")
+        yield Button("Yes · y", id="confirm-discard-yes", classes="danger-btn discard-confirmation")
+        yield Button("No · n", id="confirm-discard-no", classes="state-btn discard-confirmation")
+
+    def set_state(self, state: str) -> None:
+        """Render the parent view's state without owning state itself."""
+        confirming = state == "confirming_discard"
+        toggle = self.query_one("#action-toggle", Button)
+        stop = self.query_one("#action-stop", Button)
+        discard = self.query_one("#action-discard", Button)
+        confirmation = self.query_one("#discard-confirmation", Static)
+        confirm_yes = self.query_one("#confirm-discard-yes", Button)
+        confirm_no = self.query_one("#confirm-discard-no", Button)
+
+        toggle.label = "▶  Resume  ·  p" if state == "paused" else "⏸  Pause  ·  p"
+        toggle.set_classes("state-btn paused" if state == "paused" else "state-btn recording")
+        for widget in (toggle, stop, discard):
+            widget.display = not confirming
+        for widget in (confirmation, confirm_yes, confirm_no):
+            widget.display = confirming
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        event.stop()
+        view = self.app.query_one(RecordingView)
+        button_id = event.button.id
+        if button_id == "action-toggle":
+            self.app.action_toggle_pause()
+        elif button_id == "action-stop":
+            self.app.action_stop_recording()
+        elif button_id == "action-discard":
+            view.request_discard()
+        elif button_id == "confirm-discard-yes":
+            self.app.action_cancel_recording()
+        elif button_id == "confirm-discard-no":
+            view.cancel_discard()
+
+
+class RecordingView(Container):
+    """Single-column, state-driven view shown during an active recording."""
+
+    elapsed_time = reactive(0)
+    state = reactive("recording")
+
+    def compose(self) -> ComposeResult:
         with Vertical(id="recording-container"):
-            # Two-column layout: status on left, inputs on right
-            with Horizontal(id="recording-columns"):
-                # Left column: Recording status and monitoring info
-                with Vertical(id="recording-left-column"):
-                    # Status header
-                    yield Static("🔴  RECORDING", id="recording-status")
-
-                    # Timer display
-                    yield Static("00:00", id="recording-timer")
-
-                    # Audio device info — populated at start_recording with
-                    # mic + resolved system sink (so the user can see
-                    # whether auto-pick chose the right sink).
+            with Vertical(id="recording-header"):
+                with Horizontal(id="recording-status-line"):
+                    yield Static("●  RECORDING", id="recording-status")
+                    yield Static("00:00:00", id="recording-timer")
                     yield Static("", id="audio-device-info")
+                yield Static("[dim]probing…[/dim]", id="audio-sources-list")
+                with Horizontal(id="recording-meter-rows"):
+                    with Vertical(classes="meter-row"):
+                        yield Static("MIC", id="level-meter-label")
+                        yield Static("[dim]waiting…[/dim]", id="level-meter-bar")
+                    with Vertical(classes="meter-row"):
+                        yield Static("SYS", id="system-level-meter-label")
+                        yield Static("[dim]waiting…[/dim]", id="system-level-meter-bar")
+            with Horizontal(id="recording-title-strip"):
+                yield Static("Meeting title", id="title-label")
+                yield Input(placeholder="Optional title…", id="meeting-title-input")
+            with Vertical(id="recording-notes-region"):
+                yield Static("Notes", id="notes-label")
+                yield TextArea(id="user-notes-input")
+            yield ActionBar()
 
-                    # "Audio source" panel: what apps are currently routing
-                    # audio to our captured sink. If this stays empty for
-                    # long while the meeting is in progress, it's the
-                    # strongest signal that the system leg won't capture
-                    # the other participants.
-                    yield Static("Audio sources:", id="audio-sources-label")
-                    yield Static(
-                        "[dim]probing…[/dim]",
-                        id="audio-sources-list",
-                    )
+    def watch_elapsed_time(self, elapsed: int) -> None:
+        hours, remainder = divmod(elapsed, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        self.query_one("#recording-timer", Static).update(f"{hours:02d}:{minutes:02d}:{seconds:02d}")
 
-                    # Live mic level meter (real-time visual confirmation
-                    # that audio is actually reaching the system).
-                    yield Static("Mic level:", id="level-meter-label")
-                    yield Static("[dim]waiting…[/dim]", id="level-meter-bar")
-
-                    # Live system-audio level meter. This is what would
-                    # have saved James' first real meeting: if this bar
-                    # stays flat while the meeting is in progress, the
-                    # other participants are NOT being captured.
-                    yield Static("System audio level:", id="system-level-meter-label")
-                    yield Static("[dim]waiting…[/dim]", id="system-level-meter-bar")
-                
-                # Right column: User input fields
-                with Vertical(id="recording-right-column"):
-                    # Optional title input
-                    yield Static("Meeting Title (optional):", id="title-label")
-                    yield Input(placeholder="Enter meeting title...", id="meeting-title-input")
-                    
-                    # User notes area
-                    yield Static("Your Notes:", id="notes-label")
-                    # Plain text avoids an optional tree-sitter Markdown grammar
-                    # turning the recording screen into a runtime failure.
-                    yield TextArea(id="user-notes-input")
-            
-            # Visible controls — same actions as the keyboard shortcuts.
-            with Horizontal(id="recording-controls"):
-                yield Button("⏸ Pause", id="pause-button", variant="primary")
-                yield Button("⏹ Stop & Process", id="stop-button", variant="error")
-                yield Button("⏏ Discard", id="discard-button", variant="warning")
-
-            # Instruction hints at the bottom (full width)
-            yield Static("Press 'p' to pause/resume  |  's' to stop  |  'x' to discard", id="stop-hint")
-            yield Static("Press 'Esc' to unfocus title input", id="esc-hint")
-    
-    def watch_elapsed_time(self, time: int) -> None:
-        """Update timer display when elapsed_time changes."""
-        minutes = time // 60
-        seconds = time % 60
-        timer = self.query_one("#recording-timer", Static)
-        timer.update(f"{minutes:02d}:{seconds:02d}")
-
-    def watch_is_paused(self, paused: bool) -> None:
-        """Update status header and pause button label when pause state changes."""
-        status = self.query_one("#recording-status", Static)
-        pause_button = self.query_one("#pause-button", Button)
-        if paused:
-            status.update("⏸  PAUSED")
-            status.styles.color = "yellow"
-            pause_button.label = "▶ Resume"
-            pause_button.variant = "success"
-        else:
-            status.update("🔴  RECORDING")
-            status.styles.color = "red"
-            pause_button.label = "⏸ Pause"
-            pause_button.variant = "primary"
-        pause_button.refresh()
+    def watch_state(self, state: str) -> None:
+        self.remove_class("recording", "paused", "confirming-discard")
+        self.add_class(state.replace("_", "-"))
+        try:
+            status = self.query_one("#recording-status", Static)
+            status.update({
+                "recording": "●  RECORDING",
+                "paused": "⏸  PAUSED",
+                "confirming_discard": "●  RECORDING",
+            }[state])
+            self.query_one(ActionBar).set_state(state)
+        except Exception:
+            # The initial reactive update can happen before child compose.
+            pass
 
     def on_mount(self) -> None:
-        """Move focus AWAY from input fields when the recording view mounts.
-
-        Textual auto-focuses the first focusable widget on mount, which is
-        the meeting-title Input. That means 's' (stop) and 'x' (cancel)
-        keypresses go into the title field instead of triggering the
-        bindings — extremely surprising behavior the first time you try
-        to stop a recording. We explicitly unfocus so the screen-level
-        bindings handle keys until the user deliberately clicks/tabs
-        into the title or notes area.
-        """
+        self.watch_state(self.state)
         try:
             self.screen.set_focus(None)
         except Exception:
             pass
 
+    def request_discard(self) -> None:
+        self.state = "confirming_discard"
+        try:
+            self.screen.set_focus(None)
+        except Exception:
+            pass
+
+    def cancel_discard(self) -> None:
+        self.state = "paused" if self.app._is_paused() else "recording"
+
     def on_key(self, event) -> None:
-        """Handle key events for the recording view."""
+        if self.state == "confirming_discard":
+            if event.key == "y":
+                event.prevent_default()
+                self.app.action_cancel_recording()
+            elif event.key in ("n", "escape"):
+                event.prevent_default()
+                self.cancel_discard()
+            return
         if event.key == "escape":
-            # Unfocus the title input or notes textarea so global key
-            # bindings (like 's' to stop) work again without tabbing away.
             try:
                 if self._has_focused_input():
                     self.screen.set_focus(None)
                     event.prevent_default()
             except Exception:
-                pass  # Inputs not found or not mounted
+                pass
         elif event.key == "s" and not self._has_focused_input():
-            # Allow 's' to stop the recording even when the recording view
-            # is focused but no input widget within it is. Without this,
-            # the user has to manually tab away from inputs first.
             event.prevent_default()
             self.app.action_stop_recording()
         elif event.key == "x" and not self._has_focused_input():
             event.prevent_default()
-            self.app.action_cancel_recording()
+            self.request_discard()
         elif event.key == "p" and not self._has_focused_input():
             event.prevent_default()
             self.app.action_toggle_pause()
 
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        """Handle visible control buttons."""
-        if event.button.id == "pause-button":
-            self.app.action_toggle_pause()
-        elif event.button.id == "stop-button":
-            self.app.action_stop_recording()
-        elif event.button.id == "discard-button":
-            self.app.action_cancel_recording()
-
     def _has_focused_input(self) -> bool:
-        """Check if any text input widget within this view has focus."""
         try:
             title_input = self.query_one("#meeting-title-input", Input)
             notes_input = self.query_one("#user-notes-input", TextArea)
@@ -622,117 +617,160 @@ class MeetingNotesApp(App):
         margin-left: 1;
     }
     
+    /* Recording-screen tokens. Keep this visual system local and inline. */
+    $rec-active: $error;
+    $rec-paused: $warning;
+    $meter-ok: $success;
+    $meter-warn: $warning;
+    $meter-clip: $error;
+
     RecordingView {
         width: 100%;
         height: 100%;
-        border: solid $error;
-        padding: 2;
+        padding: 0 1;
         background: $panel;
-        align: center middle;
     }
-    
+
+    RecordingView.recording { border: solid $rec-active; }
+    RecordingView.paused { border: solid $rec-paused; }
+    RecordingView.confirming-discard { border: solid $rec-active; }
+
     #recording-container {
-        width: 90%;
-        height: 90%;
-        align: center middle;
-    }
-    
-    #recording-columns {
         width: 100%;
-        height: 1fr;
-        layout: horizontal;
-    }
-    
-    #recording-left-column {
-        width: 40%;
         height: 100%;
-        padding: 2;
-        align: center top;
     }
-    
-    #recording-right-column {
-        width: 60%;
-        height: 100%;
-        padding: 2;
+
+    #recording-header {
+        height: auto;
+        padding: 0 1;
+        border-bottom: solid $panel-lighten-1;
     }
-    
-    #recording-status {
-        text-align: center;
-        text-style: bold;
-        color: $error;
-        margin: 2 0;
-        content-align: center middle;
-    }
-    
-    #recording-timer {
-        text-align: center;
-        text-style: bold;
-        color: $text;
-        height: 5;
-        content-align: center middle;
-        margin: 2 0;
-    }
-    
-    #audio-device-info {
-        text-align: center;
-        color: $text-muted;
-        margin: 2 0;
-        padding: 1;
-        background: $panel;
-        border: solid $primary;
+
+    #recording-status-line {
+        height: 1;
         width: 100%;
     }
 
-    #audio-sources-label,
-    #level-meter-label,
-    #system-level-meter-label {
-        text-align: center;
+    #recording-status {
+        width: 18;
+        text-style: bold;
+        color: $rec-active;
+    }
+
+    RecordingView.paused #recording-status { color: $rec-paused; }
+
+    #recording-timer {
+        width: 12;
+        text-style: bold;
+        color: $text;
+    }
+
+    #audio-device-info {
+        width: 1fr;
+        text-align: right;
         color: $text-muted;
-        margin-top: 1;
     }
 
     #audio-sources-list {
-        text-align: center;
-        color: $text;
-        margin-bottom: 1;
+        height: auto;
+        color: $text-muted;
         padding: 0 1;
+    }
+
+    #recording-meter-rows {
+        height: auto;
         width: 100%;
+    }
+
+    .meter-row {
+        width: 1fr;
+        height: 2;
+    }
+
+    #level-meter-label,
+    #system-level-meter-label {
+        width: 5;
+        color: $text-muted;
+        text-style: bold;
     }
 
     #level-meter-bar,
     #system-level-meter-bar {
-        text-align: center;
-        color: $success;
-        margin-bottom: 1;
-        width: 100%;
+        width: 1fr;
+        color: $meter-ok;
     }
-    
+
+    #recording-title-strip {
+        height: 3;
+        padding: 0 1;
+        border-bottom: solid $panel-lighten-1;
+        align: left middle;
+    }
+
     #title-label {
+        width: 16;
         color: $text-muted;
-        margin-bottom: 1;
     }
-    
+
     #meeting-title-input {
-        width: 100%;
-        margin: 0 0 2 0;
+        width: 1fr;
     }
-    
+
+    #recording-notes-region {
+        height: 1fr;
+        padding: 0 1;
+    }
+
     #notes-label {
+        height: 1;
         color: $text-muted;
-        margin-bottom: 1;
     }
-    
+
     #user-notes-input {
         width: 100%;
         height: 1fr;
     }
-    
-    #stop-hint, #cancel-hint, #esc-hint {
-        text-align: center;
-        color: $text-muted;
-        margin-top: 1;
+
+    ActionBar {
+        dock: bottom;
+        height: 3;
+        width: 100%;
+        padding: 0 1;
+        background: $surface;
+        border-top: solid $panel-lighten-1;
+        align: left middle;
     }
-    
+
+    ActionBar Button {
+        height: 3;
+        min-width: 20;
+        margin: 0 1 0 0;
+        border: none;
+        text-style: bold;
+    }
+
+    ActionBar .action-spacer { width: 1fr; }
+    ActionBar .state-btn.recording { background: $primary; color: $text; }
+    ActionBar .state-btn.paused { background: $success; color: $text; }
+    ActionBar .primary-btn { background: $accent; color: $text; }
+    ActionBar .danger-btn {
+        background: transparent;
+        color: $error;
+        border: tall $error 35%;
+    }
+    ActionBar .danger-btn:hover, ActionBar .danger-btn:focus {
+        background: $error;
+        color: $text;
+        border: tall $error;
+    }
+    ActionBar .discard-confirmation { display: none; }
+    #discard-confirmation {
+        width: 1fr;
+        text-align: right;
+        color: $warning;
+        text-style: bold;
+    }
+
     .panel-title {
         text-style: bold;
         color: $accent;
@@ -760,8 +798,10 @@ class MeetingNotesApp(App):
     BINDINGS = [
         Binding("r", "start_recording", "Record", show=True),
         Binding("s", "stop_recording", "Stop", show=False, priority=True),
-        Binding("x", "cancel_recording", "Cancel", show=False, priority=True),
+        Binding("x", "request_discard", "Discard", show=False, priority=True),
         Binding("p", "toggle_pause", "Pause", show=False, priority=True),
+        Binding("y", "confirm_discard", "Confirm Discard", show=False, priority=True),
+        Binding("n", "reject_discard", "Keep Recording", show=False, priority=True),
         Binding("o", "open_in_editor", "Open", show=True),
         Binding("c", "copy_to_clipboard", "Copy", show=True),
         Binding("P", "copy_path", "Copy Path", show=True),
@@ -1026,13 +1066,19 @@ class MeetingNotesApp(App):
         """Control which actions are available based on recording state."""
         if action == "start_recording":
             return not self.is_recording
-        elif action in ["stop_recording", "cancel_recording"]:
+        elif action in ["stop_recording", "request_discard", "cancel_recording"]:
             return self.is_recording
         elif action == "audio_test":
             # Hide from the footer while recording — running the test mid-meeting
             # would fight the recorder for the same source.
             return not self.is_recording
-        return True  # All other actions always available
+        if action in {
+            "open_in_editor", "copy_to_clipboard", "copy_path", "show_in_folder",
+            "delete_meeting", "edit_title", "view_transcript", "manage_tags",
+        }:
+            # These operate on a completed meeting and are inert mid-recording.
+            return not self.is_recording
+        return True  # Settings and Quit remain available while recording
     
     def update_recording_timer(self) -> None:
         """Called every second to update recording timer.
@@ -1383,7 +1429,7 @@ class MeetingNotesApp(App):
                 # the UI stays consistent if we launch already paused.
                 try:
                     recording_view = self.query_one(RecordingView)
-                    recording_view.is_paused = self._is_paused()
+                    recording_view.state = "paused" if self._is_paused() else "recording"
                 except Exception:
                     pass
 
@@ -1421,7 +1467,7 @@ class MeetingNotesApp(App):
 
             try:
                 recording_view = self.query_one(RecordingView)
-                recording_view.is_paused = self.recorder.is_paused()
+                recording_view.state = "paused" if self.recorder.is_paused() else "recording"
             except Exception:
                 pass
 
@@ -1430,6 +1476,33 @@ class MeetingNotesApp(App):
         except Exception as e:
             logger.error(f"Failed to toggle pause: {e}", exc_info=True)
             self.notify(f"Failed to pause/resume: {e}", severity="error")
+
+    def action_request_discard(self) -> None:
+        """Show the in-view discard confirmation without destroying the recording."""
+        if not self.is_recording:
+            return
+        try:
+            self.query_one(RecordingView).request_discard()
+        except Exception:
+            logger.debug("Discard requested before recording view mounted")
+
+    def action_confirm_discard(self) -> None:
+        """Confirm discard only while its inline confirmation is visible."""
+        try:
+            view = self.query_one(RecordingView)
+            if view.state == "confirming_discard":
+                self.action_cancel_recording()
+        except Exception:
+            pass
+
+    def action_reject_discard(self) -> None:
+        """Return from inline discard confirmation to the active recording."""
+        try:
+            view = self.query_one(RecordingView)
+            if view.state == "confirming_discard":
+                view.cancel_discard()
+        except Exception:
+            pass
 
     def action_cancel_recording(self) -> None:
         """Cancel recording and discard without processing."""
@@ -1515,7 +1588,7 @@ class MeetingNotesApp(App):
                 # burst accurately and the view shows RECORDING briefly.
                 try:
                     recording_view = self.query_one(RecordingView)
-                    recording_view.is_paused = False
+                    recording_view.state = "recording"
                 except Exception:
                     pass
 

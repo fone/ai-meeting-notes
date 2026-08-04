@@ -24,9 +24,9 @@ pytest.importorskip("whisper", reason="run `pip install -e .[all,dev]` to enable
 pytest.importorskip("textual", reason="run `pip install -e .[all,dev]` to enable Textual smoke tests")
 
 import meeting_notes.app as meeting_app  # noqa: E402
-from meeting_notes.app import MeetingNotesApp, RecordingView  # noqa: E402  (deliberate import-after-skip)
+from meeting_notes.app import ActionBar, MeetingNotesApp, RecordingView  # noqa: E402  (deliberate import-after-skip)
 from meeting_notes.config import AppConfig, load_config  # noqa: E402
-from textual.widgets import Button, Input  # noqa: E402
+from textual.widgets import Button, Input, Static  # noqa: E402
 
 
 @pytest.mark.asyncio
@@ -47,8 +47,8 @@ async def test_app_starts_and_exits_cleanly(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_recording_view_has_clickable_controls(tmp_path, monkeypatch):
-    """The recording screen exposes buttons wired to the three real actions."""
+async def test_recording_view_action_bar_requires_discard_confirmation(tmp_path, monkeypatch):
+    """Recording commands have one visible surface and discard takes two choices."""
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.chdir(tmp_path)
 
@@ -58,24 +58,181 @@ async def test_recording_view_has_clickable_controls(tmp_path, monkeypatch):
     monkeypatch.setattr(app, "action_stop_recording", lambda: calls.append("stop"))
     monkeypatch.setattr(app, "action_cancel_recording", lambda: calls.append("discard"))
 
-    async with app.run_test() as pilot:
+    async with app.run_test(size=(80, 24)) as pilot:
         view = RecordingView()
         await app.mount(view)
         await pilot.pause()
 
-        assert view.query_one("#pause-button", Button).label == "⏸ Pause"
-        assert view.query_one("#stop-button", Button).label == "⏹ Stop & Process"
-        assert view.query_one("#discard-button", Button).label == "⏏ Discard"
+        action_bar = view.query_one(ActionBar)
+        assert action_bar.region.height > 0
+        assert view.query_one("#action-toggle", Button).label == "⏸  Pause  ·  p"
+        assert view.query_one("#action-stop", Button).label == "⏹  Stop & Process  ·  s"
+        assert view.query_one("#action-discard", Button).label == "⏏  Discard  ·  x"
+        assert not list(view.query("#recording-controls"))
+        assert not list(view.query("#stop-hint"))
+        assert not list(view.query("#esc-hint"))
 
-        await pilot.click("#pause-button")
-        await pilot.click("#stop-button")
-        await pilot.click("#discard-button")
+        await pilot.click("#action-toggle")
+        await pilot.click("#action-stop")
+        await pilot.click("#action-discard")
+        await pilot.pause()
+        assert calls == ["pause", "stop"]
+        assert view.state == "confirming_discard"
+        assert view.query_one("#confirm-discard-yes", Button).display
+        assert view.query_one("#level-meter-bar", Static).display
+
+        await pilot.click("#confirm-discard-no")
+        await pilot.pause()
+        assert calls == ["pause", "stop"]
+        assert view.state == "recording"
+
+        app.is_recording = True
+        view.screen.set_focus(None)
+        await pilot.press("x")
+        await pilot.pause()
+        assert view.state == "confirming_discard"
+        await pilot.press("n")
+        await pilot.pause()
+        assert view.state == "recording"
+
+        await pilot.click("#action-discard")
+        await pilot.click("#confirm-discard-yes")
         assert calls == ["pause", "stop", "discard"]
 
-        view.is_paused = True
+        view.state = "paused"
         await pilot.pause()
-        assert view.query_one("#pause-button", Button).label == "▶ Resume"
+        assert view.query_one("#action-toggle", Button).label == "▶  Resume  ·  p"
         app.exit()
+
+
+
+@pytest.mark.asyncio
+async def test_recording_view_expands_notes_without_hiding_action_bar(tmp_path, monkeypatch):
+    """The flexible notes region grows at desktop size while controls stay visible."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.chdir(tmp_path)
+    app = MeetingNotesApp()
+
+    async with app.run_test(size=(200, 60)) as pilot:
+        view = RecordingView()
+        await app.mount(view)
+        await pilot.pause()
+
+        title_strip = view.query_one("#recording-title-strip")
+        notes = view.query_one("#recording-notes-region")
+        action_bar = view.query_one(ActionBar)
+        assert title_strip.region.height > 0
+        assert notes.region.height > title_strip.region.height
+        assert action_bar.region.height > 0
+        assert notes.region.bottom <= action_bar.region.y
+        app.exit()
+
+
+
+@pytest.mark.asyncio
+async def test_fake_recorder_starts_and_stops_without_capture_processes(tmp_path, monkeypatch):
+    """Recording lifecycle can mount and tear down the redesigned view safely."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.chdir(tmp_path)
+    app = MeetingNotesApp()
+
+    class FakeRecorder:
+        resolved_system_sink = None
+        last_system_silent = False
+        last_mic_silent = False
+        last_temp_files = []
+
+        def __init__(self):
+            self.running = False
+            self.started = False
+            self.stopped = False
+
+        def is_recording(self):
+            return self.running
+
+        def is_paused(self):
+            return False
+
+        def get_paused_duration(self):
+            return 0.0
+
+        def start_recording(self):
+            self.started = True
+            self.running = True
+
+        def stop_recording(self):
+            self.stopped = True
+            self.running = False
+            return "fake-recording.wav"
+
+        def get_audio_device_info(self):
+            return {"mode": "mic", "mic_device": "fake-mic"}
+
+    fake = FakeRecorder()
+    async with app.run_test(size=(80, 24)) as pilot:
+        app.recorder = fake
+        monkeypatch.setattr(app, "_start_level_meter", lambda: None)
+        monkeypatch.setattr(app, "_stop_level_meter", lambda: None)
+        monkeypatch.setattr(app, "update_audio_sources_panel", lambda: None)
+        monkeypatch.setattr(app, "process_recording", lambda *args: None)
+        await app.action_start_recording()
+        await pilot.pause()
+        assert fake.started
+        assert app.is_recording
+        assert app.query_one(RecordingView)
+
+        app.action_stop_recording()
+        await pilot.pause()
+        assert fake.stopped
+        assert not app.is_recording
+        assert not list(app.query(RecordingView))
+        app.exit()
+
+
+def test_recording_timer_excludes_paused_seconds(tmp_path, monkeypatch):
+    """The recording redesign must not regress pause-adjusted elapsed time."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.chdir(tmp_path)
+
+    app = MeetingNotesApp()
+    statuses = []
+
+    class FakeRecorder:
+        def get_paused_duration(self):
+            return 5.0
+
+        def is_paused(self):
+            return True
+
+    app.recorder = FakeRecorder()
+    app.is_recording = True
+    app.recording_start_time = 100.0
+    monkeypatch.setattr(meeting_app.time, "time", lambda: 120.0)
+    monkeypatch.setattr(
+        app,
+        "_write_status_file",
+        lambda *args, **kwargs: statuses.append((args, kwargs)),
+    )
+
+    app.update_recording_timer()
+
+    assert statuses == [(("paused",), {"duration": "00:15"})]
+
+
+def test_recording_context_hides_library_actions(tmp_path, monkeypatch):
+    """The recording footer keeps Settings/Quit but hides inert library actions."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.chdir(tmp_path)
+    app = MeetingNotesApp()
+    app.is_recording = True
+
+    for action in (
+        "open_in_editor", "copy_to_clipboard", "copy_path", "show_in_folder",
+        "delete_meeting", "edit_title", "view_transcript", "manage_tags",
+    ):
+        assert app.check_action(action, ()) is False
+    assert app.check_action("open_settings", ()) is True
+    assert app.check_action("quit", ()) is True
 
 
 @pytest.mark.asyncio
