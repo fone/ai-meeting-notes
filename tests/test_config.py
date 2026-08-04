@@ -69,6 +69,11 @@ def test_unknown_keys_in_from_dict_are_ignored():
     assert cfg.ai_provider == "anthropic"
 
 
+def test_theme_roundtrips_through_config():
+    cfg = AppConfig(theme="dracula")
+    assert AppConfig.from_dict(cfg.to_dict()).theme == "dracula"
+
+
 def test_default_provider_is_anthropic():
     """Sanity check: the default cloud provider hasn't drifted."""
     cfg = AppConfig()

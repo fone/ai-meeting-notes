@@ -27,6 +27,10 @@ class AppConfig:
     # Legacy (kept for backwards compatibility)
     ollama_model: str = "llama3.2:3b"
     
+    # Display
+    # Textual theme name selected from the built-in palette.
+    theme: str = "textual-dark"
+
     # Other settings
     whisper_model: str = "base"
     # Whisper compute device: "cpu" (default, safe everywhere), "cuda" (force GPU),

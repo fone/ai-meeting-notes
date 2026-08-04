@@ -1075,11 +1075,30 @@ class MeetingNotesApp(App):
         # Footer with keyboard shortcuts
         yield Footer()
     
+    def _persist_selected_theme(self, theme) -> None:
+        """Persist a palette choice made through Textual's theme picker."""
+        theme_name = theme.name
+        if theme_name == self.config.theme:
+            return
+        self.config.theme = theme_name
+        try:
+            save_config(self.config)
+            logger.info("Saved Textual theme preference: %s", theme_name)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Could not save Textual theme preference: %s", exc, exc_info=True)
+
     def on_mount(self) -> None:
         """Initialize app on mount."""
         logger.info("Initializing Meeting Notes app")
         logger.info(f"Config: {self.config.to_safe_dict()}")
         logger.debug(f"Dev mode: {self.dev_mode}")
+
+        saved_theme = self.config.theme
+        if saved_theme in self.available_themes:
+            self.theme = saved_theme
+        else:
+            logger.warning("Configured Textual theme %r is unavailable; using %r", saved_theme, self.theme)
+        self.theme_changed_signal.subscribe(self, self._persist_selected_theme, immediate=True)
         
         self.title = "Meeting Notes"
         self.sub_title = "Keyboard-driven meeting recorder"
