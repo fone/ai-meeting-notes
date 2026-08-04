@@ -254,7 +254,7 @@ class SettingsScreen(Screen):
     #settings-content {
         width: 100%;
         height: 1fr;
-        padding: 2;
+        padding: 1 2;
         overflow-y: auto;
     }
     
@@ -283,17 +283,25 @@ class SettingsScreen(Screen):
     .settings-section-title {
         text-style: bold;
         color: $accent;
-        margin-bottom: 1;
-        margin-top: 2;
+        margin: 1 0 0 0;
+    }
+
+    .provider-choice {
+        width: 100%;
+        height: 1;
+        min-height: 1;
+        margin: 0;
+        padding: 0 1;
+        border: none;
     }
     
     .settings-field {
-        margin-bottom: 2;
+        margin-bottom: 1;
     }
     
     .settings-label {
         color: $text-muted;
-        margin-bottom: 1;
+        margin: 0;
     }
     
     .settings-input {
@@ -303,7 +311,7 @@ class SettingsScreen(Screen):
     .settings-hint {
         color: $text-muted;
         text-style: italic;
-        margin-top: 1;
+        margin: 0;
     }
     
     #model-list {
@@ -369,29 +377,36 @@ class SettingsScreen(Screen):
             ("openai", "OpenAI (GPT-4o Mini/4o)", "Fast, cheap, great quality"),
             ("anthropic", "Anthropic (Claude)", "Excellent quality, best for action items"),
             ("openrouter", "OpenRouter", "Access to 300+ models"),
+            ("ollama_cloud", "Ollama Cloud", "Hosted Ollama models with any model ID"),
+            ("custom_openai_compatible", "Custom OpenAI-compatible", "Your endpoint, API key, and model ID"),
             ("local", "Local (Ollama)", "Private, offline, slow"),
             ("none", "No AI", "Just transcripts, no summary"),
         ]
         
-        for provider_id, provider_name, provider_desc in providers:
+        for provider_id, provider_name, _provider_desc in providers:
             is_current = provider_id == current_provider
             marker = "●" if is_current else "○"
             label = f"{marker} {provider_name}"
-            btn = Button(label, id=f"provider-{provider_id}", variant="primary" if is_current else "default")
+            btn = Button(
+                label,
+                id=f"provider-{provider_id}",
+                variant="primary" if is_current else "default",
+                classes="provider-choice",
+            )
             btn.provider_id = provider_id
             widgets.append(btn)
-            if is_current:
-                widgets.append(Static(f"  → {provider_desc}", classes="settings-hint"))
-        
-        widgets.append(Static(""))  # Spacer
-        
-        # Show provider-specific settings
+
+        # Show provider-specific settings immediately below the compact picker.
         if current_provider == "openai":
             widgets.extend(self.render_openai_settings())
         elif current_provider == "anthropic":
             widgets.extend(self.render_anthropic_settings())
         elif current_provider == "openrouter":
             widgets.extend(self.render_openrouter_settings())
+        elif current_provider == "ollama_cloud":
+            widgets.extend(self.render_ollama_cloud_settings())
+        elif current_provider == "custom_openai_compatible":
+            widgets.extend(self.render_custom_compatible_settings())
         elif current_provider == "local":
             widgets.extend(self.render_local_ollama_settings())
         elif current_provider == "none":
@@ -511,6 +526,64 @@ class SettingsScreen(Screen):
         
         return widgets
     
+    def render_ollama_cloud_settings(self) -> list:
+        """Render the hosted Ollama preset with a freeform model field."""
+        return [
+            Static("Ollama Cloud Settings", classes="settings-section-title"),
+            Static("Endpoint: https://ollama.com/v1", classes="settings-hint"),
+            Static("Model ID", classes="settings-label"),
+            Input(
+                value=self.config.get("ai_model") or "kimi-k2.6",
+                id="ollama-cloud-model-input",
+                classes="settings-input",
+                placeholder="kimi-k2.6",
+            ),
+            Static("Use the exact model ID shown by Ollama Cloud.", classes="settings-hint"),
+            Static("API Key", classes="settings-label"),
+            Input(
+                value=self.config.get("ollama_cloud_api_key", ""),
+                password=True,
+                id="ollama-cloud-key-input",
+                classes="settings-input",
+                placeholder="Or set OLLAMA_API_KEY",
+            ),
+        ]
+
+    def render_custom_compatible_settings(self) -> list:
+        """Render a generic OpenAI-compatible provider profile."""
+        return [
+            Static("Custom OpenAI-compatible Provider", classes="settings-section-title"),
+            Static("Provider name", classes="settings-label"),
+            Input(
+                value=self.config.get("custom_provider_name") or "Custom OpenAI-compatible",
+                id="custom-provider-name-input",
+                classes="settings-input",
+                placeholder="Company LLM Gateway",
+            ),
+            Static("Base URL", classes="settings-label"),
+            Input(
+                value=self.config.get("custom_base_url", ""),
+                id="custom-base-url-input",
+                classes="settings-input",
+                placeholder="https://api.example.com/v1",
+            ),
+            Static("Model ID", classes="settings-label"),
+            Input(
+                value=self.config.get("ai_model", ""),
+                id="custom-model-input",
+                classes="settings-input",
+                placeholder="provider/model-name",
+            ),
+            Static("API Key (optional for self-hosted endpoints)", classes="settings-label"),
+            Input(
+                value=self.config.get("custom_api_key", ""),
+                password=True,
+                id="custom-api-key-input",
+                classes="settings-input",
+                placeholder="Leave blank when your endpoint needs no key",
+            ),
+        ]
+
     def render_local_ollama_settings(self) -> list:
         """Render local Ollama settings."""
         widgets = []
@@ -792,6 +865,10 @@ class SettingsScreen(Screen):
                     self.config["ai_model"] = "haiku"
                 elif event.button.provider_id == "openrouter":
                     self.config["ai_model"] = "balanced"
+                elif event.button.provider_id == "ollama_cloud":
+                    self.config["ai_model"] = "kimi-k2.6"
+                elif event.button.provider_id == "custom_openai_compatible":
+                    self.config["ai_model"] = ""
                 elif event.button.provider_id == "local":
                     # `or` fallback so an empty-string ollama_model still
                     # produces a runnable default (dict.get only fills in the
@@ -987,6 +1064,32 @@ class SettingsScreen(Screen):
         except Exception:
             pass
         
+        try:
+            ollama_cloud_key = self.query("#ollama-cloud-key-input")
+            if ollama_cloud_key:
+                self.config["ollama_cloud_api_key"] = ollama_cloud_key[0].value.strip()
+            ollama_cloud_model = self.query("#ollama-cloud-model-input")
+            if ollama_cloud_model:
+                self.config["ai_model"] = ollama_cloud_model[0].value.strip()
+        except Exception:
+            pass
+
+        try:
+            custom_name = self.query("#custom-provider-name-input")
+            if custom_name:
+                self.config["custom_provider_name"] = custom_name[0].value.strip()
+            custom_url = self.query("#custom-base-url-input")
+            if custom_url:
+                self.config["custom_base_url"] = custom_url[0].value.strip()
+            custom_model = self.query("#custom-model-input")
+            if custom_model:
+                self.config["ai_model"] = custom_model[0].value.strip()
+            custom_key = self.query("#custom-api-key-input")
+            if custom_key:
+                self.config["custom_api_key"] = custom_key[0].value.strip()
+        except Exception:
+            pass
+
         # Update diagnostic temp-audio retention values. A missing input means
         # another Settings section is visible; malformed input is a real error,
         # not something to silently discard.

@@ -963,13 +963,17 @@ class MeetingNotesApp(App):
             api_key = self.config.openrouter_api_key or os.getenv("OPENROUTER_API_KEY")
         elif self.config.ai_provider == "ollama_cloud":
             api_key = self.config.ollama_cloud_api_key or os.getenv("OLLAMA_API_KEY")
+        elif self.config.ai_provider == "custom_openai_compatible":
+            api_key = self.config.custom_api_key
         
         self.note_maker = NoteMaker(
             output_dir=self.config.notes_dir,
             transcripts_dir=self.config.transcripts_dir,
             ai_provider=self.config.ai_provider,
             ai_model=self.config.ai_model,
-            api_key=api_key
+            api_key=api_key,
+            api_base_url=self.config.custom_base_url,
+            provider_name=self.config.custom_provider_name,
         )
         self.notes_dir = Path(self.config.notes_dir).expanduser()
         self.notes_dir.mkdir(parents=True, exist_ok=True)
@@ -2507,13 +2511,17 @@ class MeetingNotesApp(App):
                 api_key = self.config.openrouter_api_key or os.getenv("OPENROUTER_API_KEY")
             elif self.config.ai_provider == "ollama_cloud":
                 api_key = self.config.ollama_cloud_api_key or os.getenv("OLLAMA_API_KEY")
+            elif self.config.ai_provider == "custom_openai_compatible":
+                api_key = self.config.custom_api_key
             
             self.note_maker = NoteMaker(
                 output_dir=self.config.notes_dir,
                 transcripts_dir=self.config.transcripts_dir,
                 ai_provider=self.config.ai_provider,
                 ai_model=self.config.ai_model,
-                api_key=api_key
+                api_key=api_key,
+                api_base_url=self.config.custom_base_url,
+                provider_name=self.config.custom_provider_name,
             )
             self.notes_dir = Path(self.config.notes_dir).expanduser()
             self.notes_dir.mkdir(parents=True, exist_ok=True)

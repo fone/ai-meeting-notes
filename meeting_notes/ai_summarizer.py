@@ -520,3 +520,61 @@ class OllamaCloudSummarizer(BaseSummarizer):
                     logger.error(f"All {max_retries} attempts failed for Ollama Cloud API call")
                     logger.error(error_msg, exc_info=True)
                     raise
+
+
+class OpenAICompatibleSummarizer(BaseSummarizer):
+    """Summarize through a user-configured OpenAI-compatible endpoint."""
+
+    def __init__(
+        self,
+        api_key: Optional[str],
+        model: str,
+        base_url: str,
+        provider_name: str = "Custom OpenAI-compatible",
+    ):
+        if not model.strip():
+            raise ValueError("Custom provider model ID is required")
+        if not base_url.strip():
+            raise ValueError("Custom provider base URL is required")
+        self.model = model.strip()
+        self.base_url = base_url.rstrip("/")
+        self.provider_name = provider_name.strip() or "Custom OpenAI-compatible"
+        try:
+            from openai import OpenAI
+            # OpenAI's SDK requires a key even when a self-hosted compatible
+            # server deliberately ignores authorization.
+            self.client = OpenAI(api_key=api_key or "not-needed", base_url=self.base_url)
+        except ImportError:
+            raise ImportError("openai package not installed. Run: pip install openai")
+
+    def summarize(self, transcript: str, user_notes: str = "") -> MeetingSummary:
+        logger.info("Generating AI summary with %s (%s)...", self.provider_name, self.model)
+        max_retries = 2
+        retry_delay = 2
+        for attempt in range(max_retries):
+            try:
+                response = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=[{"role": "user", "content": self._build_prompt(transcript, user_notes=user_notes)}],
+                    temperature=0.3,
+                    max_tokens=4096,
+                )
+                usage = getattr(response, "usage", None)
+                if usage:
+                    logger.info(
+                        "✓ Summary generated (%s tokens)",
+                        usage.prompt_tokens + usage.completion_tokens,
+                    )
+                else:
+                    logger.info("✓ Summary generated")
+                return self._parse_response(response.choices[0].message.content)
+            except Exception as exc:  # noqa: BLE001
+                if attempt < max_retries - 1:
+                    logger.warning(
+                        "Custom provider attempt %d/%d failed: %s; retrying in %ss",
+                        attempt + 1, max_retries, exc, retry_delay,
+                    )
+                    time.sleep(retry_delay)
+                else:
+                    logger.error("All custom provider attempts failed", exc_info=True)
+                    raise

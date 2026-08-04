@@ -2,6 +2,7 @@
 
 import os
 import yaml
+from urllib.parse import urlparse
 from pathlib import Path
 from typing import Dict, Any, Optional
 from dataclasses import dataclass, asdict
@@ -23,6 +24,11 @@ class AppConfig:
     anthropic_api_key: str = ""  # ANTHROPIC_API_KEY
     openrouter_api_key: str = ""  # OPENROUTER_API_KEY
     ollama_cloud_api_key: str = ""  # OLLAMA_API_KEY
+    # Generic OpenAI-compatible endpoint. API key is optional for self-hosted
+    # endpoints that do not enforce bearer authentication.
+    custom_provider_name: str = "Custom OpenAI-compatible"
+    custom_base_url: str = ""
+    custom_api_key: str = ""
     
     # Legacy (kept for backwards compatibility)
     ollama_model: str = "llama3.2:3b"
@@ -75,6 +81,8 @@ class AppConfig:
             data['openrouter_api_key'] = self._redact_key(data['openrouter_api_key'])
         if data.get('ollama_cloud_api_key'):
             data['ollama_cloud_api_key'] = self._redact_key(data['ollama_cloud_api_key'])
+        if data.get('custom_api_key'):
+            data['custom_api_key'] = self._redact_key(data['custom_api_key'])
         return data
     
     @classmethod
@@ -159,7 +167,7 @@ def validate_config(config: AppConfig) -> tuple[bool, Optional[str]]:
         (is_valid, error_message)
     """
     # Validate AI provider
-    valid_providers = ["openai", "anthropic", "openrouter", "ollama_cloud", "local", "none"]
+    valid_providers = ["openai", "anthropic", "openrouter", "ollama_cloud", "custom_openai_compatible", "local", "none"]
     if config.ai_provider not in valid_providers:
         return False, f"Invalid ai_provider: {config.ai_provider}. Must be one of {valid_providers}"
     
@@ -199,7 +207,23 @@ def validate_config(config: AppConfig) -> tuple[bool, Optional[str]]:
         if config.ai_model not in valid_models:
             return False, f"Invalid ai_model for OpenRouter: {config.ai_model}. Must be one of {valid_models}"
     
-    # Validate whisper model
+    elif config.ai_provider == "ollama_cloud":
+        api_key = config.ollama_cloud_api_key or os.getenv("OLLAMA_API_KEY")
+        if not api_key:
+            return False, (
+                "ai_provider is 'ollama_cloud' but no API key found.\n"
+                "Set OLLAMA_API_KEY environment variable or ollama_cloud_api_key in config"
+            )
+        if not config.ai_model.strip():
+            return False, "Ollama Cloud model ID cannot be empty"
+
+    elif config.ai_provider == "custom_openai_compatible":
+        if not config.ai_model.strip():
+            return False, "Custom provider model ID cannot be empty"
+        parsed = urlparse(config.custom_base_url.strip())
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            return False, "Custom provider base URL must be a complete http(s) URL, e.g. https://api.example.com/v1"
+
     valid_whisper = ["tiny", "base", "small", "medium", "large"]
     if config.whisper_model not in valid_whisper:
         return False, f"Invalid whisper_model: {config.whisper_model}. Must be one of {valid_whisper}"

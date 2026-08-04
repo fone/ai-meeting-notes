@@ -150,6 +150,49 @@ def test_audio_devices_roundtrip():
     assert d["system_device"] == "alsa_output.pci-Y"
 
 
+def test_custom_compatible_provider_roundtrips_and_validates():
+    cfg = AppConfig(
+        ai_provider="custom_openai_compatible",
+        ai_model="llama-3.3-70b",
+        custom_provider_name="Team Gateway",
+        custom_base_url="https://llm.example.test/v1",
+        custom_api_key="test-key",
+    )
+    saved = cfg.to_dict()
+    restored = AppConfig.from_dict(saved)
+    assert restored.custom_provider_name == "Team Gateway"
+    assert restored.custom_base_url == "https://llm.example.test/v1"
+    assert restored.ai_model == "llama-3.3-70b"
+    ok, error = validate_config(restored)
+    assert ok, error
+
+
+def test_custom_compatible_provider_rejects_bad_endpoint_or_blank_model():
+    invalid = (
+        AppConfig(ai_provider="custom_openai_compatible", ai_model="model", custom_base_url="not-a-url"),
+        AppConfig(ai_provider="custom_openai_compatible", ai_model="", custom_base_url="https://llm.example.test/v1"),
+    )
+    for cfg in invalid:
+        ok, error = validate_config(cfg)
+        assert not ok
+        assert error
+
+
+def test_ollama_cloud_requires_key_and_accepts_freeform_model():
+    missing_key = AppConfig(ai_provider="ollama_cloud", ai_model="kimi-k2.6")
+    ok, error = validate_config(missing_key)
+    assert not ok
+    assert "OLLAMA_API_KEY" in error
+
+    configured = AppConfig(
+        ai_provider="ollama_cloud",
+        ai_model="custom-model:latest",
+        ollama_cloud_api_key="test-key",
+    )
+    ok, error = validate_config(configured)
+    assert ok, error
+
+
 def test_to_safe_dict_redacts_keys():
     """API keys must be redacted in the safe dict (used for logging)."""
     cfg = AppConfig(
