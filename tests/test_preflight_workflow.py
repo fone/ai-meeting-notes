@@ -4,7 +4,7 @@ pytest.importorskip("whisper", reason="requires Textual meeting-notes dependenci
 pytest.importorskip("textual", reason="requires Textual meeting-notes dependencies")
 
 from meeting_notes.app import ActionBar, MeetingNotesApp, RecordingView
-from textual.widgets import Button
+from textual.widgets import Button, Static
 
 
 @pytest.mark.asyncio
@@ -61,6 +61,7 @@ async def test_preflight_checks_meters_before_starting_recorder(tmp_path, monkey
         assert meter_starts == [True]
         assert routing_refreshes == [True]
         assert app.timer_interval is None
+        assert not view.query_one("#recording-timer", Static).display
         assert not fake.current_file.with_suffix(".notes.md").exists()
         assert bar.query_one("#action-begin", Button).display
         assert bar.query_one("#action-back", Button).display

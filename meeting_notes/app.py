@@ -206,6 +206,7 @@ class RecordingView(Container):
                 "paused": "⏸  PAUSED",
                 "confirming_discard": "●  RECORDING",
             }[state])
+            self.query_one("#recording-timer", Static).display = state != "preflight"
             self.query_one(ActionBar).set_state(state)
         except Exception:
             # The initial reactive update can happen before child compose.
