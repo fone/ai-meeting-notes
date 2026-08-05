@@ -91,7 +91,9 @@ INSTRUCTIONS:
    Write "None identified" only if no decisions were made.
 
 5. NAMES MENTIONED
-   Extract person names mentioned or reasonably identifiable in the conversation.
+   Extract only person names that are explicitly stated in the transcript or
+   user notes. Do NOT infer, complete, guess, or assign identities from voice,
+   context, partial names, roles, or likely attendees.
    This is NOT an attendance roster and does not prove that a person attended
    or spoke in the meeting. List as comma-separated names.
 
