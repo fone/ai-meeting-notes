@@ -415,8 +415,12 @@ class SettingsScreen(Screen):
         # Whisper Model (Transcription)
         widgets.append(Static(""))  # Spacer
         widgets.append(Static("Whisper Model (Transcription)", classes="settings-label"))
-        widgets.append(Static(f"Current: {self.config.get('whisper_model', 'base')}", classes="settings-hint"))
-        widgets.append(Static("(Model selection coming soon)", classes="settings-hint"))
+        current_transcriber = self.config.get("whisper_model", "turbo")
+        widgets.append(Static(f"Current: {current_transcriber}", classes="settings-hint"))
+        if current_transcriber == "turbo":
+            widgets.append(Static("Turbo runs locally with VAD for reliable long meetings.", classes="settings-hint"))
+        else:
+            widgets.append(Static("Turbo is recommended for long, multi-speaker meetings.", classes="settings-hint"))
         
         return widgets
     
