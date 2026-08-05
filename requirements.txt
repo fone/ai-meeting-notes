@@ -2,6 +2,7 @@
 # Core
 textual>=0.50.0
 openai-whisper>=20231117
+faster-whisper>=1.2.1
 pyyaml>=6.0
 
 # Cloud AI providers (optional in pyproject.toml, required here for the bundled setup scripts)
