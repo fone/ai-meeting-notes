@@ -380,7 +380,8 @@ async def test_fake_recorder_starts_and_stops_without_capture_processes(tmp_path
         assert not app.is_recording
         assert not list(app.query(RecordingView))
         assert sidecar.exists()
-        assert processed == [("fake-recording.wav", "Fake meeting", "- durable note")]
+        assert processed[0][:3] == ("fake-recording.wav", "Fake meeting", "- durable note")
+        assert processed[0][3] is not None
         app.exit()
 
 

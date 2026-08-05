@@ -116,7 +116,8 @@ class NoteMaker:
         duration: float,
         title: Optional[str] = None,
         metadata: Optional[dict] = None,
-        user_notes: str = ""
+        user_notes: str = "",
+        meeting_start: Optional[datetime] = None,
     ) -> tuple[str, str, Optional[str]]:
         """Create a markdown note and separate transcript file.
 
@@ -131,7 +132,10 @@ class NoteMaker:
         Returns:
             Tuple of (note_path, transcript_path, error_message). error_message is None if no error occurred.
         """
-        now = datetime.now()
+        # Notes are generated only after transcription and summarization.
+        # Their timestamps must describe when capture began, not when
+        # processing eventually completed.
+        now = meeting_start or datetime.now()
 
         # Keep a non-empty user title; otherwise let the summarizer suggest one.
         # Collapse whitespace so either a user or model cannot inject new frontmatter
@@ -300,7 +304,7 @@ class NoteMaker:
         date_str = date.strftime("%B %d, %Y at %I:%M %p")
 
         content = f"""Meeting: {title}
-Date: {date_str}
+Start: {date_str}
 Duration: {duration_str}
 Recording: {recording_file}
 
@@ -377,7 +381,7 @@ This meeting covered several topics. Key themes included: {', '.join(summary['ke
         content = f"""{frontmatter}
 # {title}
 
-**Date:** {date_str}
+**Start:** {date_str}
 **Duration:** {duration_str}
 **Words:** {summary['word_count']:,}
 

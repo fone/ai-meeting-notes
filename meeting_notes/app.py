@@ -997,6 +997,7 @@ class MeetingNotesApp(App):
         self._routing_warning_visible = False
         self._routing_healthy_since: Optional[float] = None
         self.recording_start_time = None
+        self.recording_started_at: Optional[datetime] = None
         self._active_recording_path: Optional[Path] = None
         self.all_note_paths = []  # Store all note paths for filtering
         self._level_meter: Optional[MicLevelMeter] = None
@@ -1663,6 +1664,7 @@ class MeetingNotesApp(App):
                 self.is_recording = True
                 self.is_preflighting = False
                 self.recording_start_time = time.time()
+                self.recording_started_at = datetime.now()
                 self._active_recording_path = getattr(self.recorder, "current_file", None)
                 self.persist_recording_notes("", "")
                 # Reset mid-recording warning state for this session
@@ -1741,6 +1743,7 @@ class MeetingNotesApp(App):
                 self.is_recording = False
                 self.is_preflighting = True
                 self.recording_start_time = None
+                self.recording_started_at = None
                 try:
                     self.query_one(RecordingView).state = "preflight"
                 except Exception:
@@ -1832,6 +1835,7 @@ class MeetingNotesApp(App):
                 self._active_recording_path = None
             self.is_recording = False
             self.recording_start_time = None
+            self.recording_started_at = None
             logger.info("Recording cancelled successfully")
             
             # Update status back to idle
@@ -1905,10 +1909,15 @@ class MeetingNotesApp(App):
                 except Exception:
                     pass
 
+                # Preserve the capture timestamp before processing clears the
+                # recording state. Transcription may run for many minutes.
+                recording_started_at = self.recording_started_at
+
                 # Stop recording
                 audio_path = self.recorder.stop_recording()
                 self.is_recording = False
                 self.recording_start_time = None
+                self.recording_started_at = None
                 logger.info(f"Recording stopped. Audio saved to: {audio_path}")
 
                 # Surface per-leg silence warnings BEFORE the user navigates
@@ -1953,7 +1962,9 @@ class MeetingNotesApp(App):
                 
                 # Process in background
                 self.notify("Processing recording...", severity="information")
-                self.process_recording(audio_path, meeting_title, user_notes)
+                self.process_recording(
+                    audio_path, meeting_title, user_notes, recording_started_at
+                )
                 
             except Exception as e:
                 logger.error(f"Failed to stop recording: {e}", exc_info=True)
@@ -1961,7 +1972,13 @@ class MeetingNotesApp(App):
                 self.is_recording = False
     
     @work(exclusive=True, thread=True)
-    def process_recording(self, audio_path: str, meeting_title: Optional[str] = None, user_notes: str = "") -> None:
+    def process_recording(
+        self,
+        audio_path: str,
+        meeting_title: Optional[str] = None,
+        user_notes: str = "",
+        meeting_start: Optional[datetime] = None,
+    ) -> None:
         """Process recording in background thread."""
         logger.info(f"Processing recording: {audio_path}")
         try:
@@ -1993,7 +2010,8 @@ class MeetingNotesApp(App):
                 formatted_transcript=formatted,
                 duration=duration,
                 title=meeting_title,
-                user_notes=user_notes
+                user_notes=user_notes,
+                meeting_start=meeting_start,
             )
             
             # Update UI

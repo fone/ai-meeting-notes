@@ -1,4 +1,5 @@
 from datetime import datetime
+from pathlib import Path
 
 from meeting_notes.note_maker import NoteMaker
 from meeting_notes.summarizer import MeetingSummary
@@ -49,3 +50,27 @@ def test_meeting_filename_base_is_readable_and_collision_safe(tmp_path):
 
     (tmp_path / "transcripts" / "2026-08-05-Wednesday-Meeting-0940.txt").write_text("existing")
     assert maker._meeting_filename_base(meeting_time) == "2026-08-05-Wednesday-Meeting-0940-2"
+
+
+def test_note_maker_uses_capture_start_not_processing_time(tmp_path):
+    maker = NoteMaker(
+        output_dir=str(tmp_path / "notes"),
+        transcripts_dir=str(tmp_path / "transcripts"),
+        ai_provider="none",
+    )
+    started = datetime(2026, 8, 5, 8, 58, 52)
+    note_path, transcript_path, error = maker.create_note(
+        transcript_text="hello world",
+        formatted_transcript="**[00:00]** hello world",
+        duration=2131,
+        title="Weekly meeting",
+        meeting_start=started,
+    )
+
+    assert error is None
+    assert note_path.endswith("2026-08-05-Wednesday-Meeting.md")
+    note = Path(note_path).read_text()
+    transcript = Path(transcript_path).read_text()
+    assert 'time: "08:58"' in note
+    assert "**Start:** August 05, 2026 at 08:58 AM" in note
+    assert "Start: August 05, 2026 at 08:58 AM" in transcript
