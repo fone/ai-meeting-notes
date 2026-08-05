@@ -646,7 +646,10 @@ class ConfirmDeleteScreen(ModalScreen):
     }
     
     #confirm-dialog {
-        width: 60;
+        /* Keep the thick border inside narrow terminals instead of letting it
+           collide with the right edge of the underlying screen. */
+        width: 90%;
+        max-width: 60;
         height: auto;
         border: thick $error;
         background: $surface;

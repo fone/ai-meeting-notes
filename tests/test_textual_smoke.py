@@ -24,7 +24,12 @@ pytest.importorskip("whisper", reason="run `pip install -e .[all,dev]` to enable
 pytest.importorskip("textual", reason="run `pip install -e .[all,dev]` to enable Textual smoke tests")
 
 import meeting_notes.app as meeting_app  # noqa: E402
-from meeting_notes.app import ActionBar, MeetingNotesApp, RecordingView  # noqa: E402  (deliberate import-after-skip)
+from meeting_notes.app import (  # noqa: E402  (deliberate import-after-skip)
+    ActionBar,
+    ConfirmDeleteScreen,
+    MeetingNotesApp,
+    RecordingView,
+)
 from meeting_notes.config import AppConfig, load_config  # noqa: E402
 from textual.widgets import Button, Footer, Input, Static, TextArea  # noqa: E402
 
@@ -43,6 +48,19 @@ async def test_app_starts_and_exits_cleanly(tmp_path, monkeypatch):
         await pilot.pause()
         assert app.is_running
         # Quit cleanly
+        app.exit()
+
+
+@pytest.mark.asyncio
+async def test_delete_confirmation_keeps_thick_border_off_narrow_terminal_edges():
+    """The confirmation frame needs breathing room at the common 60-column size."""
+    app = MeetingNotesApp()
+    async with app.run_test(size=(60, 28)) as pilot:
+        app.push_screen(ConfirmDeleteScreen("Meeting 2026-08-04 14:09"))
+        await pilot.pause()
+        dialog = app.screen.query_one("#confirm-dialog")
+        assert dialog.region.x > 0
+        assert dialog.region.right < 60
         app.exit()
 
 
