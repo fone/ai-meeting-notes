@@ -139,6 +139,37 @@ def test_cpu_path_uses_fp16_false(fake_whisper, monkeypatch, tmp_path):
     assert t.model.transcribe_calls, "transcribe should have been invoked"
     _, kwargs = t.model.transcribe_calls[0]
     assert kwargs.get("fp16") is False
+    assert kwargs.get("condition_on_previous_text") is False
+
+
+def test_turbo_uses_faster_whisper_vad_and_unconditioned_segments(monkeypatch, tmp_path):
+    """Long meetings use the more accurate engine without decoder loops."""
+    calls = []
+
+    class FakeTurboModel:
+        def __init__(self, *args, **kwargs):
+            calls.append((args, kwargs))
+
+        def transcribe(self, path, **kwargs):
+            calls.append((path, kwargs))
+            segments = [types.SimpleNamespace(start=1.0, end=2.0, text=" Team update ")]
+            return iter(segments), types.SimpleNamespace(language="en")
+
+    monkeypatch.setitem(
+        sys.modules,
+        "faster_whisper",
+        types.SimpleNamespace(WhisperModel=FakeTurboModel),
+    )
+    from meeting_notes import transcriber as transcriber_mod
+    audio = tmp_path / "fake.wav"
+    audio.write_bytes(b"\x00\x00")
+
+    result = transcriber_mod.WhisperTranscriber("turbo", device="cpu").transcribe(str(audio))
+
+    assert calls[0] == (("turbo",), {"device": "cpu", "compute_type": "int8", "cpu_threads": 8})
+    assert calls[1][1]["vad_filter"] is True
+    assert calls[1][1]["condition_on_previous_text"] is False
+    assert result.text == "Team update"
 
 
 def test_unknown_device_string_falls_back_to_cpu(fake_whisper, monkeypatch):

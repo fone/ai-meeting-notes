@@ -1,4 +1,4 @@
-"""Transcription module using OpenAI Whisper.
+"""Transcription module using OpenAI Whisper and faster-whisper.
 
 Whisper auto-picks ``cuda`` when ``torch.cuda.is_available()`` reports True,
 which can fail loudly on machines whose installed PyTorch wheel doesn't ship
@@ -59,7 +59,9 @@ class WhisperTranscriber:
         """Initialize the transcriber.
 
         Args:
-            model_name: Whisper model to use (tiny, base, small, medium, large)
+            model_name: Whisper model to use (tiny, base, small, medium, large,
+                or ``turbo``). ``turbo`` selects faster-whisper's distilled
+                large-v3 model for reliable long-form meeting transcription.
             device: One of ``"cpu"``, ``"cuda"``, or ``"auto"``. Defaults to
                 ``"cpu"`` because that matches the documented privacy-first
                 CPU pipeline and avoids broken CUDA installs taking the app
@@ -74,6 +76,7 @@ class WhisperTranscriber:
         self.requested_device = device
         self.active_device: Optional[str] = None
         self.model = None  # type: ignore[assignment]
+        self.backend = "openai_whisper"
 
     def _resolve_device(self) -> Optional[str]:
         """Translate the requested device into something to pass to Whisper.
@@ -87,6 +90,32 @@ class WhisperTranscriber:
     def load_model(self):
         """Load the Whisper model (lazy loading), with CUDA-failure fallback."""
         if self.model is not None:
+            return
+
+        if self.model_name == "turbo":
+            # faster-whisper's int8 CPU path is substantially faster than the
+            # reference PyTorch implementation while its large-v3-turbo model
+            # is materially more accurate than base on distant team speakers.
+            # VAD plus non-conditioned segments in transcribe() prevents the
+            # long-form autoregressive loops seen with the previous pipeline.
+            from faster_whisper import WhisperModel  # noqa: WPS433
+
+            target = self._resolve_device() or "auto"
+            compute_type = "float16" if target == "cuda" else "int8"
+            logger.info(
+                "Loading faster-whisper turbo model (device=%s, compute=%s)...",
+                target,
+                compute_type,
+            )
+            self.model = WhisperModel(
+                "turbo",
+                device=target,
+                compute_type=compute_type,
+                cpu_threads=8 if target == "cpu" else 0,
+            )
+            self.active_device = target
+            self.backend = "faster_whisper"
+            logger.info("faster-whisper turbo model loaded successfully on %s", target)
             return
 
         # Import lazily so unit tests / non-transcription code paths don't
@@ -142,39 +171,59 @@ class WhisperTranscriber:
             logger.error("Model not loaded")
             raise RuntimeError("Model not loaded")
 
-        # fp16 only makes sense on CUDA. Forcing fp16=False on CPU avoids
+        if self.backend == "faster_whisper":
+            segments_iter, info = self.model.transcribe(
+                str(audio_file),
+                language="en",
+                vad_filter=True,
+                condition_on_previous_text=False,
+                beam_size=5,
+                temperature=0,
+            )
+            segments = [
+                TranscriptSegment(start=seg.start, end=seg.end, text=seg.text.strip())
+                for seg in segments_iter
+                if seg.text.strip()
+            ]
+            language = info.language or "unknown"
+            text = " ".join(seg.text for seg in segments).strip()
+        else:
+            # fp16 only makes sense on CUDA. Forcing fp16=False on CPU avoids
         # noisy "FP16 is not supported on CPU; using FP32 instead" warnings
         # and a small perf hit from Whisper trying anyway.
-        use_fp16 = self.active_device is not None and self.active_device.startswith("cuda")
-
-        result = self.model.transcribe(
-            str(audio_file),
-            language=None,
-            task="transcribe",
-            verbose=False,
-            fp16=use_fp16,
-        )
-
-        segments = [
-            TranscriptSegment(
-                start=seg["start"],
-                end=seg["end"],
-                text=seg["text"].strip(),
+            use_fp16 = self.active_device is not None and self.active_device.startswith("cuda")
+            result = self.model.transcribe(
+                str(audio_file),
+                language=None,
+                task="transcribe",
+                verbose=False,
+                fp16=use_fp16,
+                # Do not feed old decoder text into the next window. This
+                # stops a bad phrase from poisoning an hour-long recording.
+                condition_on_previous_text=False,
             )
-            for seg in result["segments"]
-        ]
+            segments = [
+                TranscriptSegment(
+                    start=seg["start"],
+                    end=seg["end"],
+                    text=seg["text"].strip(),
+                )
+                for seg in result["segments"]
+            ]
+            language = result.get("language", "unknown")
+            text = result["text"].strip()
 
         duration = segments[-1].end if segments else 0.0
 
         logger.info(
             f"Transcription complete: {len(segments)} segments, "
-            f"{duration:.1f}s duration, language: {result.get('language', 'unknown')}"
+            f"{duration:.1f}s duration, language: {language}"
         )
 
         return TranscriptResult(
-            text=result["text"].strip(),
+            text=text,
             segments=segments,
-            language=result.get("language", "unknown"),
+            language=language,
             duration=duration,
         )
 

@@ -38,7 +38,10 @@ class AppConfig:
     theme: str = "textual-dark"
 
     # Other settings
-    whisper_model: str = "base"
+    # "turbo" uses faster-whisper's distilled large-v3 model. It is the
+    # production default because base Whisper loses accuracy and can loop on
+    # long multi-speaker recordings.
+    whisper_model: str = "turbo"
     # Whisper compute device: "cpu" (default, safe everywhere), "cuda" (force GPU),
     # or "auto" (let whisper/torch decide). "cpu" matches the README's
     # privacy-first CPU pipeline and dodges broken-CUDA-wheel crashes like
@@ -224,7 +227,7 @@ def validate_config(config: AppConfig) -> tuple[bool, Optional[str]]:
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
             return False, "Custom provider base URL must be a complete http(s) URL, e.g. https://api.example.com/v1"
 
-    valid_whisper = ["tiny", "base", "small", "medium", "large"]
+    valid_whisper = ["tiny", "base", "small", "medium", "large", "turbo"]
     if config.whisper_model not in valid_whisper:
         return False, f"Invalid whisper_model: {config.whisper_model}. Must be one of {valid_whisper}"
 
