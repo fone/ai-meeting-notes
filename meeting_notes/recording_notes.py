@@ -13,6 +13,8 @@ from pathlib import Path
 class RecordingNotes:
     recording_file: str
     title: str
+    attendees: str
+    glossary: str
     notes: str
     updated_at: datetime
 
@@ -27,6 +29,8 @@ def write_recording_notes(
     *,
     title: str,
     notes: str,
+    attendees: str = "",
+    glossary: str = "",
     now: datetime | None = None,
 ) -> Path:
     """Atomically persist a recording's title and notes beside its WAV."""
@@ -38,6 +42,8 @@ def write_recording_notes(
         f"recording_file: {audio.name}\n"
         f"updated_at: {now.isoformat()}\n"
         f"title: {json.dumps(title)}\n"
+        f"attendees: {json.dumps(attendees)}\n"
+        f"glossary: {json.dumps(glossary)}\n"
         "---\n\n"
         "# Recording Notes\n\n"
         f"{notes.rstrip()}\n"
@@ -67,6 +73,8 @@ def read_recording_notes(audio_path: str | Path) -> RecordingNotes:
         metadata[key] = value
     try:
         title = json.loads(metadata["title"])
+        attendees = json.loads(metadata.get("attendees", '""'))
+        glossary = json.loads(metadata.get("glossary", '""'))
         updated_at = datetime.fromisoformat(metadata["updated_at"])
         recording_file = metadata["recording_file"]
     except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
@@ -75,6 +83,8 @@ def read_recording_notes(audio_path: str | Path) -> RecordingNotes:
     return RecordingNotes(
         recording_file=recording_file,
         title=title,
+        attendees=attendees,
+        glossary=glossary,
         notes=notes,
         updated_at=updated_at,
     )

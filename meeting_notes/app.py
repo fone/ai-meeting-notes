@@ -19,6 +19,7 @@ from textual.binding import Binding
 from textual.reactive import reactive
 from textual.screen import Screen, ModalScreen
 from textual import work
+from textual.suggester import Suggester
 
 from meeting_notes.recorder import AudioRecorder, list_active_sink_inputs
 from meeting_notes.transcriber import WhisperTranscriber
@@ -34,6 +35,7 @@ from meeting_notes.recording_notes import (
     write_recording_notes,
 )
 from meeting_notes.audio_test_screen import AudioTestScreen
+from meeting_notes.meeting_context import MeetingContext, merge_name_index
 
 # Initialize logging
 setup_logging(debug=False)
@@ -105,6 +107,25 @@ class MeterVisualState:
         return now < self.clip_until
 
 
+class AttendeeSuggester(Suggester):
+    """Inline completion from typed attendee fields only, never model output."""
+
+    def __init__(self, names: list[str]) -> None:
+        super().__init__(case_sensitive=False)
+        self.names = names
+
+    async def get_suggestion(self, value: str) -> str | None:
+        prefix, separator, partial = value.rpartition(",")
+        needle = partial.strip().casefold()
+        if not needle:
+            return None
+        for name in self.names:
+            if name.casefold().startswith(needle) and name.casefold() != needle:
+                lead = f"{prefix}{separator} " if separator else ""
+                return f"{lead}{name}"
+        return None
+
+
 class ActionBar(Horizontal):
     """The recording screen's only command surface."""
 
@@ -167,6 +188,10 @@ class RecordingView(Container):
     elapsed_time = reactive(0)
     state = reactive("preflight")
 
+    def __init__(self, attendee_names: list[str] | None = None) -> None:
+        super().__init__()
+        self.attendee_names = attendee_names or []
+
     def compose(self) -> ComposeResult:
         with Vertical(id="recording-container"):
             with Vertical(id="recording-header"):
@@ -182,9 +207,17 @@ class RecordingView(Container):
                     with Vertical(classes="meter-row"):
                         yield Static("SYS", id="system-level-meter-label")
                         yield Static("[dim]waiting…[/dim]", id="system-level-meter-bar")
-            with Horizontal(id="recording-title-strip"):
-                yield Static("Meeting title", id="title-label")
-                yield Input(placeholder="Optional title…", id="meeting-title-input")
+            with Vertical(id="recording-title-strip"):
+                with Horizontal(classes="context-row"):
+                    yield Static("Meeting title", classes="context-label")
+                    yield Input(placeholder="Optional title…", id="meeting-title-input")
+                with Horizontal(classes="context-row"):
+                    yield Static("Attendees", classes="context-label")
+                    yield Input(placeholder="Comma-separated names…", suggester=AttendeeSuggester(self.attendee_names), id="meeting-attendees-input")
+                with Horizontal(classes="context-row"):
+                    yield Static("Terms", classes="context-label")
+                    yield Input(placeholder="Proper nouns ASR gets wrong — FileBound, QRadar, CDG…", id="meeting-terms-input")
+            yield Static("", id="recording-context-summary")
             with Vertical(id="recording-notes-region"):
                 yield Static("Notes · [ ] action · ? question · #tag · [MM:SS] marker", id="notes-label")
                 yield TextArea(id="user-notes-input")
@@ -215,7 +248,7 @@ class RecordingView(Container):
     def on_mount(self) -> None:
         self.watch_state(self.state)
         try:
-            self.screen.set_focus(None)
+            self.query_one("#meeting-title-input", Input).focus()
         except Exception:
             pass
 
@@ -241,10 +274,23 @@ class RecordingView(Container):
                 event.prevent_default()
                 self.cancel_discard()
             return
+        if event.key == "e" and self.state in {"recording", "paused"}:
+            self.add_class("context-editing")
+            self.query_one("#meeting-title-input", Input).focus()
+            event.prevent_default()
+            return
+        if event.key == "ctrl+g" and self.query_one("#meeting-terms-input", Input).has_focus:
+            terms = [term.strip() for term in self.query_one("#meeting-terms-input", Input).value.split(",") if term.strip()]
+            self.app.config.meeting_terms = terms
+            save_config(self.app.config)
+            self.app.notify("Saved terms as global glossary", severity="information")
+            event.prevent_default()
+            return
         if event.key == "escape":
             try:
                 if self._has_focused_input():
-                    self.screen.set_focus(None)
+                    self.remove_class("context-editing")
+                    self.screen.set_focus(self.query_one("#user-notes-input", TextArea))
                     event.prevent_default()
             except Exception:
                 pass
@@ -259,8 +305,38 @@ class RecordingView(Container):
             self.app.action_toggle_pause()
 
     def on_input_changed(self, event: Input.Changed) -> None:
-        if event.input.id == "meeting-title-input":
+        if event.input.id in {"meeting-title-input", "meeting-attendees-input", "meeting-terms-input"}:
+            if self.state == "preflight" and event.value == "x":
+                self.app.action_exit_preflight()
+                return
             self._persist_notes_sidecar()
+            self._refresh_context_summary()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        order = ["meeting-title-input", "meeting-attendees-input", "meeting-terms-input", "user-notes-input"]
+        try:
+            current = order.index(event.input.id)
+            self.query_one(f"#{order[min(current + 1, len(order) - 1)]}").focus()
+            event.stop()
+        except (ValueError, Exception):
+            pass
+
+    def _meeting_context(self) -> MeetingContext:
+        return MeetingContext(
+            title=self.query_one("#meeting-title-input", Input).value,
+            attendees=self.query_one("#meeting-attendees-input", Input).value,
+            glossary=self.query_one("#meeting-terms-input", Input).value,
+            notes=self.query_one("#user-notes-input", TextArea).text,
+        )
+
+    def _refresh_context_summary(self) -> None:
+        try:
+            summary = self._meeting_context().summary()
+            widget = self.query_one("#recording-context-summary", Static)
+            widget.update(summary + "   e edit" if summary else "")
+            widget.set_class(bool(summary), "has-context")
+        except Exception:
+            pass
 
     def on_text_area_changed(self, event: TextArea.Changed) -> None:
         if event.text_area.id == "user-notes-input":
@@ -269,17 +345,21 @@ class RecordingView(Container):
     def _persist_notes_sidecar(self) -> None:
         """Write the current inputs atomically while the recording is live."""
         try:
-            title = self.query_one("#meeting-title-input", Input).value
-            notes = self.query_one("#user-notes-input", TextArea).text
-            self.app.persist_recording_notes(title, notes)
+            context = self._meeting_context()
+            self.app.persist_recording_notes(
+                context.title, context.notes, context.attendees, context.glossary
+            )
         except Exception:
             logger.debug("Could not persist live recording notes", exc_info=True)
 
     def _has_focused_input(self) -> bool:
         try:
-            title_input = self.query_one("#meeting-title-input", Input)
-            notes_input = self.query_one("#user-notes-input", TextArea)
-            return title_input.has_focus or notes_input.has_focus
+            return any(widget.has_focus for widget in (
+                self.query_one("#meeting-title-input", Input),
+                self.query_one("#meeting-attendees-input", Input),
+                self.query_one("#meeting-terms-input", Input),
+                self.query_one("#user-notes-input", TextArea),
+            ))
         except Exception:
             return False
 
@@ -842,6 +922,25 @@ class MeetingNotesApp(App):
         width: 1fr;
     }
 
+    # Context rows deliberately get one clean reflow on record, then remain
+    # collapsed. Meter rows are above them and never move during expansion.
+    #recording-title-strip {
+        height: 9;
+        max-height: 9;
+        padding: 0;
+        border-bottom: solid $panel-lighten-1;
+    }
+    .context-row { height: 3; padding: 0; align: left middle; }
+    .context-label { width: 16; color: $text-muted; }
+    .context-row Input { width: 1fr; }
+    #recording-context-summary { display: none; height: 2; color: $text-muted; padding: 0; }
+    RecordingView.recording #recording-title-strip,
+    RecordingView.paused #recording-title-strip { display: none; }
+    RecordingView.recording #recording-context-summary.has-context,
+    RecordingView.paused #recording-context-summary.has-context { display: block; }
+    RecordingView.context-editing #recording-title-strip { display: block; }
+    RecordingView.context-editing #recording-context-summary { display: none; }
+
     #recording-notes-region {
         height: 1fr;
         padding: 0;
@@ -1051,26 +1150,34 @@ class MeetingNotesApp(App):
         else:
             logger.debug("Startup cleanup did not remove any recordings from %s", recordings_dir)
 
-    def persist_recording_notes(self, title: str, notes: str) -> None:
+    def persist_recording_notes(self, title: str, notes: str, attendees: str = "", glossary: str = "") -> None:
         """Atomically checkpoint live title/notes beside the active recording WAV."""
         if not self.is_recording or self._active_recording_path is None:
             return
         try:
-            write_recording_notes(self._active_recording_path, title=title, notes=notes)
+            write_recording_notes(
+                self._active_recording_path, title=title, notes=notes,
+                attendees=attendees, glossary=glossary,
+            )
         except Exception as exc:  # noqa: BLE001
             logger.warning("Failed to persist recording notes sidecar: %s", exc)
 
-    def _load_final_recording_notes(self, title: str | None, notes: str) -> tuple[str | None, str]:
+    def _load_final_recording_notes(
+        self, title: str | None, notes: str, attendees: str = "", glossary: str = ""
+    ) -> tuple[str | None, str, str, str]:
         """Flush and read the durable sidecar before handing notes to processing."""
         if self._active_recording_path is None:
-            return title, notes
-        self.persist_recording_notes(title or "", notes)
+            return title, notes, attendees, glossary
+        self.persist_recording_notes(title or "", notes, attendees, glossary)
         try:
             snapshot = read_recording_notes(self._active_recording_path)
-            return snapshot.title.strip() or None, snapshot.notes
+            return (
+                snapshot.title.strip() or None, snapshot.notes,
+                snapshot.attendees, snapshot.glossary,
+            )
         except (FileNotFoundError, ValueError) as exc:
             logger.warning("Could not reload recording notes sidecar: %s", exc)
-            return title, notes
+            return title, notes, attendees, glossary
 
     def compose(self) -> ComposeResult:
         """Build the UI."""
@@ -1587,8 +1694,9 @@ class MeetingNotesApp(App):
 
             main_panels = self.query_one("#main-panels", Container)
             main_panels.display = False
-            recording_view = RecordingView()
+            recording_view = RecordingView(self.config.attendee_name_index)
             await self.mount(recording_view)
+            recording_view.query_one("#meeting-terms-input", Input).value = ", ".join(self.config.meeting_terms)
             recording_view.state = "preflight"
             self.is_preflighting = True
             self._routing_warning_visible = False
@@ -1666,7 +1774,9 @@ class MeetingNotesApp(App):
                 self.recording_start_time = time.time()
                 self.recording_started_at = datetime.now()
                 self._active_recording_path = getattr(self.recorder, "current_file", None)
-                self.persist_recording_notes("", "")
+                self.persist_recording_notes(
+                    "", "", "", ", ".join(self.config.meeting_terms)
+                )
                 # Reset mid-recording warning state for this session
                 self._warned_misrouted_apps = set()
                 self._warned_silent_system = False
@@ -1872,6 +1982,8 @@ class MeetingNotesApp(App):
             try:
                 # Get meeting title if provided
                 meeting_title = None
+                attendees = ""
+                glossary = ""
                 user_notes = ""
                 try:
                     recording_view = self.query_one(RecordingView)
@@ -1880,6 +1992,8 @@ class MeetingNotesApp(App):
                     if meeting_title:
                         logger.info(f"Meeting title: {meeting_title}")
                     
+                    attendees = recording_view.query_one("#meeting-attendees-input", Input).value
+                    glossary = recording_view.query_one("#meeting-terms-input", Input).value
                     # Get user notes from text area
                     notes_input = recording_view.query_one("#user-notes-input", TextArea)
                     user_notes = notes_input.text.strip() if notes_input.text else ""
@@ -1888,7 +2002,13 @@ class MeetingNotesApp(App):
                 except Exception:
                     pass  # No title input found
 
-                meeting_title, user_notes = self._load_final_recording_notes(meeting_title, user_notes)
+                meeting_title, user_notes, attendees, glossary = self._load_final_recording_notes(
+                    meeting_title, user_notes, attendees, glossary
+                )
+                updated_index = merge_name_index(self.config.attendee_name_index, attendees)
+                if updated_index != self.config.attendee_name_index:
+                    self.config.attendee_name_index = updated_index
+                    save_config(self.config)
                 
                 # Stop timer + level meter + routing refresh
                 if self.timer_interval:
@@ -1963,7 +2083,7 @@ class MeetingNotesApp(App):
                 # Process in background
                 self.notify("Processing recording...", severity="information")
                 self.process_recording(
-                    audio_path, meeting_title, user_notes, recording_started_at
+                    audio_path, meeting_title, user_notes, recording_started_at, attendees, glossary
                 )
                 
             except Exception as e:
@@ -1978,6 +2098,8 @@ class MeetingNotesApp(App):
         meeting_title: Optional[str] = None,
         user_notes: str = "",
         meeting_start: Optional[datetime] = None,
+        attendees: str = "",
+        glossary: str = "",
     ) -> None:
         """Process recording in background thread."""
         logger.info(f"Processing recording: {audio_path}")
@@ -2011,6 +2133,7 @@ class MeetingNotesApp(App):
                 duration=duration,
                 title=meeting_title,
                 user_notes=user_notes,
+                metadata={"attendees": attendees, "glossary": glossary},
                 meeting_start=meeting_start,
             )
             

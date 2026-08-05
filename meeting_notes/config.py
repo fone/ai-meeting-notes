@@ -5,7 +5,7 @@ import yaml
 from urllib.parse import urlparse
 from pathlib import Path
 from typing import Dict, Any, Optional
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 
 from .logger import get_logger
 
@@ -36,6 +36,11 @@ class AppConfig:
     # Display
     # Textual theme name selected from the built-in palette.
     theme: str = "textual-dark"
+
+    # Meeting context. Terms persist because they are environment vocabulary;
+    # attendee names are only an autocomplete index sourced from typed fields.
+    meeting_terms: list[str] = field(default_factory=list)
+    attendee_name_index: list[str] = field(default_factory=list)
 
     # Other settings
     # "turbo" uses faster-whisper's distilled large-v3 model. It is the

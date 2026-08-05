@@ -2,13 +2,12 @@ from meeting_notes.ai_summarizer import BaseSummarizer
 from meeting_notes.summarizer import OllamaSummarizer
 
 
-def test_prompt_and_parser_distinguish_names_mentioned_from_attendees():
+def test_prompt_and_parser_support_people_with_attendee_fallback():
     summarizer = BaseSummarizer()
     prompt = summarizer._build_prompt("Pete will send the update.")
-    assert "NAMES MENTIONED" in prompt
-    assert "NOT an attendance roster" in prompt
-    assert "explicitly stated" in prompt
-    assert "Do NOT infer, complete, guess, or assign identities" in prompt
+    assert "PEOPLE:" in prompt
+    assert "no speaker labels" in prompt
+    assert "do not infer ownership from adjacency" in prompt
 
     summary = summarizer._parse_response(
         """TITLE:
@@ -21,17 +20,18 @@ ACTION ITEMS:
 None identified
 DECISIONS:
 None identified
-NAMES MENTIONED:
+OPEN QUESTIONS:
+- Who owns this?
+PEOPLE:
 Pete, Adam
 """
     )
     assert summary.participants == ["Pete", "Adam"]
+    assert summary.open_questions == ["Who owns this?"]
 
 
-def test_local_ollama_prompt_uses_the_same_explicit_names_contract():
+def test_local_ollama_uses_prompt_v2_and_people_contract():
     prompt = OllamaSummarizer()._build_prompt("Pete will send the update.")
-    assert "NAMES MENTIONED" in prompt
-    assert "NOT an attendance roster" in prompt
-    assert "explicitly stated" in prompt
-    assert "Do NOT infer, complete, guess, or assign identities" in prompt
+    assert "PEOPLE:" in prompt
+    assert "<transcript>" in prompt
     assert "PARTICIPANTS:" not in prompt

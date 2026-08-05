@@ -3,10 +3,11 @@ AI-powered meeting summarizer using Ollama.
 """
 import subprocess
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List, Optional
 
 from .logger import get_logger
+from .summary_prompt import build_prompt
 
 logger = get_logger(__name__)
 
@@ -19,6 +20,7 @@ class MeetingSummary:
     action_items: List[str]
     decisions: List[str]
     participants: List[str]
+    open_questions: List[str] = field(default_factory=list)
     title: Optional[str] = None
 
 
@@ -34,7 +36,7 @@ class OllamaSummarizer:
         """
         self.model = model
 
-    def summarize(self, transcript: str, user_notes: str = "") -> MeetingSummary:
+    def summarize(self, transcript: str, user_notes: str = "", attendees: str = "", glossary: str = "") -> MeetingSummary:
         """
         Generate an AI summary of a meeting transcript.
 
@@ -47,14 +49,18 @@ class OllamaSummarizer:
         """
         logger.info(f"Generating AI summary with {self.model}...")
 
-        prompt = self._build_prompt(transcript, user_notes=user_notes)
+        prompt = self._build_prompt(transcript, user_notes=user_notes, attendees=attendees, glossary=glossary)
         response = self._call_ollama(prompt)
         summary = self._parse_response(response)
 
         return summary
 
-    def _build_prompt(self, transcript: str, user_notes: str = "") -> str:
-        """Build the prompt for the AI model."""
+    def _build_prompt(self, transcript: str, user_notes: str = "", attendees: str = "", glossary: str = "") -> str:
+        """Build the shared version 2 prompt used by local Ollama too."""
+        return build_prompt(transcript, user_notes=user_notes, attendees=attendees, glossary=glossary)
+
+    def _legacy_build_prompt(self, transcript: str, user_notes: str = "") -> str:
+        """Historical v1 prompt retained during migration."""
         # Add user notes section if present
         user_notes_section = ""
         if user_notes:
@@ -211,7 +217,12 @@ NAMES MENTIONED:
                         sections[current_section] = '\n'.join(current_content).strip()
                     current_section = 'decisions'
                     current_content = []
-                elif line.startswith('PARTICIPANTS:'):
+                elif line.startswith('OPEN QUESTIONS:'):
+                    if current_section:
+                        sections[current_section] = '\n'.join(current_content).strip()
+                    current_section = 'open_questions'
+                    current_content = []
+                elif line.startswith('PEOPLE:') or line.startswith('NAMES MENTIONED:') or line.startswith('PARTICIPANTS:'):
                     if current_section:
                         sections[current_section] = '\n'.join(current_content).strip()
                     current_section = 'participants'
@@ -259,6 +270,11 @@ NAMES MENTIONED:
             if not decisions or any('none identified' in dec.lower() for dec in decisions):
                 decisions = []
 
+            open_questions_text = sections.get('open_questions', '')
+            open_questions = [line.lstrip('- ').strip() for line in open_questions_text.split('\n') if line.strip().startswith('-')]
+            if any('none identified' in question.lower() for question in open_questions):
+                open_questions = []
+
             # Parse participants (comma-separated)
             participants_text = sections.get('participants', 'Unable to identify')
             if 'unable to identify' not in participants_text.lower():
@@ -271,6 +287,7 @@ NAMES MENTIONED:
                 key_points=key_points,
                 action_items=action_items,
                 decisions=decisions,
+                open_questions=open_questions,
                 participants=participants,
                 title=title,
             )
@@ -282,6 +299,7 @@ NAMES MENTIONED:
                 key_points=['See full AI response above'],
                 action_items=[],
                 decisions=[],
+                open_questions=[],
                 participants=[],
                 title=None,
             )

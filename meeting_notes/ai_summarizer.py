@@ -1,11 +1,12 @@
 """Unified AI summarizer supporting multiple cloud providers."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List, Optional
 import os
 import time
 
 from .logger import get_logger
+from .summary_prompt import build_prompt
 
 logger = get_logger(__name__)
 
@@ -18,14 +19,21 @@ class MeetingSummary:
     action_items: List[str]
     decisions: List[str]
     participants: List[str]
+    open_questions: List[str] = field(default_factory=list)
     title: Optional[str] = None
 
 
 class BaseSummarizer:
     """Base class for AI summarizers with shared prompt and parsing logic."""
 
-    def _build_prompt(self, transcript: str, user_notes: str = "") -> str:
-        """Build the prompt for the AI model (shared across all providers)."""
+    def _build_prompt(
+        self, transcript: str, user_notes: str = "", attendees: str = "", glossary: str = ""
+    ) -> str:
+        """Build prompt v2 with optional discrete authoritative context blocks."""
+        return build_prompt(transcript, user_notes=user_notes, attendees=attendees, glossary=glossary)
+
+    def _legacy_build_prompt(self, transcript: str, user_notes: str = "") -> str:
+        """Retained temporarily only as historical source during prompt migration."""
         # Add user notes section if present
         user_notes_section = ""
         if user_notes:
@@ -159,7 +167,12 @@ NAMES MENTIONED:
                         sections[current_section] = '\n'.join(current_content).strip()
                     current_section = 'decisions'
                     current_content = []
-                elif line.startswith('NAMES MENTIONED:') or line.startswith('PARTICIPANTS:'):
+                elif line.startswith('OPEN QUESTIONS:'):
+                    if current_section:
+                        sections[current_section] = '\n'.join(current_content).strip()
+                    current_section = 'open_questions'
+                    current_content = []
+                elif line.startswith('PEOPLE:') or line.startswith('NAMES MENTIONED:') or line.startswith('PARTICIPANTS:'):
                     if current_section:
                         sections[current_section] = '\n'.join(current_content).strip()
                     current_section = 'names_mentioned'
@@ -207,6 +220,11 @@ NAMES MENTIONED:
             if not decisions or any('none identified' in dec.lower() for dec in decisions):
                 decisions = []
 
+            open_questions_text = sections.get('open_questions', '')
+            open_questions = [line.lstrip('- ').strip() for line in open_questions_text.split('\n') if line.strip().startswith('-')]
+            if any('none identified' in question.lower() for question in open_questions):
+                open_questions = []
+
             # This is intentionally a list of names mentioned, not an
             # attendance roster. Keep the existing field name for backwards
             # compatibility with provider adapters and note rendering.
@@ -221,6 +239,7 @@ NAMES MENTIONED:
                 key_points=key_points,
                 action_items=action_items,
                 decisions=decisions,
+                open_questions=open_questions,
                 participants=participants,
                 title=title,
             )
@@ -232,6 +251,7 @@ NAMES MENTIONED:
                 key_points=['See full AI response above'],
                 action_items=[],
                 decisions=[],
+                open_questions=[],
                 participants=[],
                 title=None,
             )
@@ -272,7 +292,7 @@ class OpenAISummarizer(BaseSummarizer):
         except ImportError:
             raise ImportError("openai package not installed. Run: pip install openai")
 
-    def summarize(self, transcript: str, user_notes: str = "") -> MeetingSummary:
+    def summarize(self, transcript: str, user_notes: str = "", attendees: str = "", glossary: str = "") -> MeetingSummary:
         """Generate summary using OpenAI with retry logic."""
         logger.info(f"Generating AI summary with {self.model_config['name']}...")
         logger.info(f"Transcript: {len(transcript.split())} words")
@@ -284,7 +304,7 @@ class OpenAISummarizer(BaseSummarizer):
             try:
                 response = self.client.chat.completions.create(
                     model=self.model,
-                    messages=[{"role": "user", "content": self._build_prompt(transcript, user_notes=user_notes)}],
+                    messages=[{"role": "user", "content": self._build_prompt(transcript, user_notes=user_notes, attendees=attendees, glossary=glossary)}],
                     temperature=0.3,
                 )
 
@@ -347,7 +367,7 @@ class AnthropicSummarizer(BaseSummarizer):
         except ImportError:
             raise ImportError("anthropic package not installed. Run: pip install anthropic")
 
-    def summarize(self, transcript: str, user_notes: str = "") -> MeetingSummary:
+    def summarize(self, transcript: str, user_notes: str = "", attendees: str = "", glossary: str = "") -> MeetingSummary:
         """Generate summary using Anthropic with retry logic."""
         logger.info(f"Generating AI summary with {self.model_config['name']}...")
         logger.info(f"Transcript: {len(transcript.split())} words")
@@ -361,7 +381,7 @@ class AnthropicSummarizer(BaseSummarizer):
                     model=self.model,
                     max_tokens=2000,
                     temperature=0.3,
-                    messages=[{"role": "user", "content": self._build_prompt(transcript, user_notes=user_notes)}]
+                    messages=[{"role": "user", "content": self._build_prompt(transcript, user_notes=user_notes, attendees=attendees, glossary=glossary)}]
                 )
 
                 # Calculate cost
@@ -426,7 +446,7 @@ class OpenRouterSummarizer(BaseSummarizer):
         except ImportError:
             raise ImportError("openrouter package not installed. Run: pip install openrouter")
 
-    def summarize(self, transcript: str, user_notes: str = "") -> MeetingSummary:
+    def summarize(self, transcript: str, user_notes: str = "", attendees: str = "", glossary: str = "") -> MeetingSummary:
         """Generate summary using OpenRouter with retry logic."""
         logger.info(f"Generating AI summary with {self.model_config['name']}...")
         logger.info(f"Transcript: {len(transcript.split())} words")
@@ -438,7 +458,7 @@ class OpenRouterSummarizer(BaseSummarizer):
             try:
                 response = self.client.chat.send(
                     model=self.model,
-                    messages=[{"role": "user", "content": self._build_prompt(transcript, user_notes=user_notes)}],
+                    messages=[{"role": "user", "content": self._build_prompt(transcript, user_notes=user_notes, attendees=attendees, glossary=glossary)}],
                     temperature=0.3,
                 )
 
@@ -494,7 +514,7 @@ class OllamaCloudSummarizer(BaseSummarizer):
         except ImportError:
             raise ImportError("openai package not installed. Run: pip install openai")
 
-    def summarize(self, transcript: str, user_notes: str = "") -> MeetingSummary:
+    def summarize(self, transcript: str, user_notes: str = "", attendees: str = "", glossary: str = "") -> MeetingSummary:
         """Generate summary using Ollama Cloud 2 with retry logic."""
         logger.info(f"Generating AI summary with Ollama Cloud ({self.model})...")
         logger.info(f"Transcript: {len(transcript.split())} words")
@@ -506,7 +526,7 @@ class OllamaCloudSummarizer(BaseSummarizer):
             try:
                 response = self.client.chat.completions.create(
                     model=self.model,
-                    messages=[{"role": "user", "content": self._build_prompt(transcript, user_notes=user_notes)}],
+                    messages=[{"role": "user", "content": self._build_prompt(transcript, user_notes=user_notes, attendees=attendees, glossary=glossary)}],
                     temperature=0.3,
                     max_tokens=self.MAX_OUTPUT_TOKENS,
                 )
@@ -565,7 +585,7 @@ class OpenAICompatibleSummarizer(BaseSummarizer):
         except ImportError:
             raise ImportError("openai package not installed. Run: pip install openai")
 
-    def summarize(self, transcript: str, user_notes: str = "") -> MeetingSummary:
+    def summarize(self, transcript: str, user_notes: str = "", attendees: str = "", glossary: str = "") -> MeetingSummary:
         logger.info("Generating AI summary with %s (%s)...", self.provider_name, self.model)
         max_retries = 2
         retry_delay = 2
@@ -573,7 +593,7 @@ class OpenAICompatibleSummarizer(BaseSummarizer):
             try:
                 response = self.client.chat.completions.create(
                     model=self.model,
-                    messages=[{"role": "user", "content": self._build_prompt(transcript, user_notes=user_notes)}],
+                    messages=[{"role": "user", "content": self._build_prompt(transcript, user_notes=user_notes, attendees=attendees, glossary=glossary)}],
                     temperature=0.3,
                     max_tokens=4096,
                 )

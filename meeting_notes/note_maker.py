@@ -4,7 +4,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional, Any
 from collections import Counter
+import json
 import re
+
+from .meeting_context import split_csv
 
 from .logger import get_logger
 from .live_notes import format_live_notes, parse_live_notes
@@ -160,7 +163,18 @@ class NoteMaker:
                 else:
                     logger.info("Generating AI summary with local Ollama")
 
-                ai_summary = self.summarizer.summarize(transcript_text, user_notes=user_notes)
+                try:
+                    ai_summary = self.summarizer.summarize(
+                        transcript_text,
+                        user_notes=user_notes,
+                        attendees=(metadata or {}).get("attendees", ""),
+                        glossary=(metadata or {}).get("glossary", ""),
+                    )
+                except TypeError as exc:
+                    if "attendees" not in str(exc) and "glossary" not in str(exc):
+                        raise
+                    # Preserve third-party/older summarizer adapter compatibility.
+                    ai_summary = self.summarizer.summarize(transcript_text, user_notes=user_notes)
                 summary = {
                     'word_count': len(transcript_text.split()),
                     'ai_summary': ai_summary,
@@ -336,6 +350,10 @@ Recording: {recording_file}
         month_dir = date.strftime("%m-%B")
         daily_note_path = f"Daily/{date.strftime('%Y')}/{month_dir}/{date.strftime('%Y-%m-%d')}-{day_name}"
         live_notes = parse_live_notes(user_notes)
+        attendees = metadata.get("attendees", "")
+        glossary = metadata.get("glossary", "")
+        # Typed roster wins. Only use model-extracted people when no roster exists.
+        people = split_csv(attendees) if attendees else getattr(summary.get("ai_summary"), "participants", [])
         tags = list(dict.fromkeys(["meeting", "auto-generated", *live_notes.tags]))
         tags_frontmatter = ", ".join(tags)
 
@@ -346,6 +364,9 @@ time: "{date.strftime("%H:%M")}"
 duration_seconds: {int(duration)}
 word_count: {summary['word_count']}
 tags: [{tags_frontmatter}]
+people: {json.dumps(people)}
+attendees: {json.dumps(attendees)}
+glossary: {json.dumps(glossary)}
 recording_file: "{recording_file}"
 transcript_file: "{transcript_filename}"
 daily_note: "[[{daily_note_path}]]"
@@ -465,6 +486,14 @@ This meeting covered several topics. Key themes included: {', '.join(summary['ke
         sections.append("### Decisions Made\n")
         if ai_summary.decisions:
             sections.append("\n".join(f"- {decision}" for decision in ai_summary.decisions))
+        else:
+            sections.append("- None identified")
+        sections.append("")
+
+        # Open questions
+        sections.append("### Open Questions\n")
+        if getattr(ai_summary, "open_questions", []):
+            sections.append("\n".join(f"- {question}" for question in ai_summary.open_questions))
         else:
             sections.append("- None identified")
         sections.append("")
