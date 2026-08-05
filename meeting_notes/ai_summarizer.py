@@ -468,6 +468,10 @@ class OllamaCloudSummarizer(BaseSummarizer):
     # Default model for meeting summarization
     DEFAULT_MODEL = "kimi-k2.6"
     API_BASE = "https://ollama.com/v1"
+    # Kimi spends a substantial portion of its output budget reasoning before it
+    # emits visible text. 4096 is enough to return a successful HTTP response
+    # with *zero* summary content for a normal long meeting.
+    MAX_OUTPUT_TOKENS = 8192
 
     def __init__(self, api_key: Optional[str] = None, model: str = ""):
         self.api_key = api_key or os.getenv("OLLAMA_API_KEY")
@@ -499,16 +503,25 @@ class OllamaCloudSummarizer(BaseSummarizer):
                     model=self.model,
                     messages=[{"role": "user", "content": self._build_prompt(transcript, user_notes=user_notes)}],
                     temperature=0.3,
-                    max_tokens=4096,
+                    max_tokens=self.MAX_OUTPUT_TOKENS,
                 )
 
                 # Calculate cost (Ollama Cloud pricing varies)
                 input_tokens = response.usage.prompt_tokens
                 output_tokens = response.usage.completion_tokens
+                choice = response.choices[0]
+                response_text = choice.message.content
+                if not isinstance(response_text, str) or not response_text.strip():
+                    finish_reason = getattr(choice, "finish_reason", "unknown")
+                    raise RuntimeError(
+                        "Ollama Cloud returned no visible summary content "
+                        f"(finish_reason={finish_reason}, output_tokens={output_tokens}). "
+                        "The model likely exhausted its reasoning budget."
+                    )
 
                 logger.info(f"✓ Summary generated ({input_tokens + output_tokens} tokens)")
 
-                return self._parse_response(response.choices[0].message.content)
+                return self._parse_response(response_text)
 
             except Exception as e:
                 error_msg = f"Attempt {attempt + 1}/{max_retries} failed: {type(e).__name__}: {e}"
