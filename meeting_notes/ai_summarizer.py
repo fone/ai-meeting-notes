@@ -90,9 +90,10 @@ INSTRUCTIONS:
    Format as clear statements of what was decided.
    Write "None identified" only if no decisions were made.
 
-5. PARTICIPANTS
-   Extract all names mentioned in the conversation.
-   List as comma-separated names.
+5. NAMES MENTIONED
+   Extract person names mentioned or reasonably identifiable in the conversation.
+   This is NOT an attendance roster and does not prove that a person attended
+   or spoke in the meeting. List as comma-separated names.
 
 FORMAT YOUR RESPONSE EXACTLY LIKE THIS:
 
@@ -115,7 +116,7 @@ DECISIONS:
 - [decision 1]
 - [decision 2]
 
-PARTICIPANTS:
+NAMES MENTIONED:
 [name1, name2, name3]
 """
 
@@ -156,10 +157,10 @@ PARTICIPANTS:
                         sections[current_section] = '\n'.join(current_content).strip()
                     current_section = 'decisions'
                     current_content = []
-                elif line.startswith('PARTICIPANTS:'):
+                elif line.startswith('NAMES MENTIONED:') or line.startswith('PARTICIPANTS:'):
                     if current_section:
                         sections[current_section] = '\n'.join(current_content).strip()
-                    current_section = 'participants'
+                    current_section = 'names_mentioned'
                     current_content = []
                 elif line and current_section:
                     current_content.append(line)
@@ -204,8 +205,10 @@ PARTICIPANTS:
             if not decisions or any('none identified' in dec.lower() for dec in decisions):
                 decisions = []
 
-            # Parse participants (comma-separated)
-            participants_text = sections.get('participants', 'Unable to identify')
+            # This is intentionally a list of names mentioned, not an
+            # attendance roster. Keep the existing field name for backwards
+            # compatibility with provider adapters and note rendering.
+            participants_text = sections.get('names_mentioned', 'Unable to identify')
             if 'unable to identify' not in participants_text.lower():
                 participants = [p.strip() for p in participants_text.split(',')]
             else:

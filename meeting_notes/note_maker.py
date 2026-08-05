@@ -184,11 +184,10 @@ class NoteMaker:
         # If no explicit title and no AI suggestion, title stays as the
         # timestamp fallback already set above.
 
-        # Generate filename base (same for both files)
-        safe_title = re.sub(r'[^\w\s-]', '', title.lower())
-        safe_title = re.sub(r'[-\s]+', '-', safe_title)
-        timestamp = now.strftime("%Y-%m-%d-%H%M%S")
-        filename_base = f"{timestamp}-{safe_title[:50]}"
+        # Keep filenames legible in Obsidian. The first meeting of a day is
+        # YYYY-MM-DD-DayName-Meeting; later meetings get their start time, and
+        # a numeric suffix only for the exceptional same-minute collision.
+        filename_base = self._meeting_filename_base(now)
 
         # Get recording filename from metadata
         recording_file = metadata.get('recording_file', '') if metadata else ''
@@ -226,6 +225,24 @@ class NoteMaker:
         self._link_to_daily_note(now, title)
 
         return str(note_path), str(transcript_path), ai_error
+
+    def _meeting_filename_base(self, date: datetime) -> str:
+        """Return a collision-safe, human-readable shared note/transcript stem."""
+        base = f"{date.strftime('%Y-%m-%d-%A')}-Meeting"
+        if not (self.output_dir / f"{base}.md").exists() and not (
+            self.transcripts_dir / f"{base}.txt"
+        ).exists():
+            return base
+
+        timed = f"{base}-{date.strftime('%H%M')}"
+        candidate = timed
+        suffix = 2
+        while (self.output_dir / f"{candidate}.md").exists() or (
+            self.transcripts_dir / f"{candidate}.txt"
+        ).exists():
+            candidate = f"{timed}-{suffix}"
+            suffix += 1
+        return candidate
 
     def _extract_simple_summary(self, text: str) -> dict:
         """Extract basic summary information without LLM.
@@ -448,9 +465,10 @@ This meeting covered several topics. Key themes included: {', '.join(summary['ke
             sections.append("- None identified")
         sections.append("")
 
-        # Participants
+        # This is explicitly not an attendee roster. The source is the
+        # transcript, so it can include people discussed but absent.
         if ai_summary.participants:
-            sections.append("### Participants\n")
+            sections.append("### Names Mentioned\n")
             sections.append(", ".join(ai_summary.participants))
             sections.append("")
 
