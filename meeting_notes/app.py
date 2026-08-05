@@ -644,6 +644,13 @@ class ConfirmDeleteScreen(ModalScreen):
     ConfirmDeleteScreen {
         align: center middle;
     }
+
+    /* ModalScreen intentionally goes transparent for ANSI terminals. That
+       lets the library pane paint through beside the thick frame, so force an
+       opaque backdrop for this destructive-action confirmation. */
+    ConfirmDeleteScreen:ansi {
+        background: $background;
+    }
     
     #confirm-dialog {
         /* Keep the thick border inside narrow terminals instead of letting it

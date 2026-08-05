@@ -56,11 +56,13 @@ async def test_delete_confirmation_keeps_thick_border_off_narrow_terminal_edges(
     """The confirmation frame needs breathing room at the common 60-column size."""
     app = MeetingNotesApp()
     async with app.run_test(size=(60, 28)) as pilot:
+        app.ansi_color = True
         app.push_screen(ConfirmDeleteScreen("Meeting 2026-08-04 14:09"))
         await pilot.pause()
         dialog = app.screen.query_one("#confirm-dialog")
         assert dialog.region.x > 0
         assert dialog.region.right < 60
+        assert app.screen.styles.background.a == 1.0
         app.exit()
 
 
