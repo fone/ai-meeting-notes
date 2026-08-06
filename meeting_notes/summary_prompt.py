@@ -26,7 +26,8 @@ SOURCE RELIABILITY — read before using any content below:
 - When a transcript name resembles a roster entry, use the roster spelling. Never list both forms.
 - <glossary> contains proper nouns that ASR gets wrong. These spellings are correct. When text plausibly refers to a glossary entry, use its spelling.
 - <user_notes> are hand-typed and authoritative. They override the transcript. Explicit actions, questions, and decisions in them must appear in output.
-- <transcript> is machine-generated and least reliable. Context blocks win conflicts.
+- <transcript> is machine-generated and contains errors, especially in proper nouns, acronyms, and product names. It is the least reliable source here. Where it conflicts with any block above, the block above wins.
+- Each transcript line begins with [MM:SS], the time that speech occurred in the recording. These timestamps are accurate. The transcript has NO speaker labels — timestamps tell you when something was said, never by whom.
 - Blocks are omitted when empty. If attendees or glossary is absent, use the fallback rules below.
 
 {source}

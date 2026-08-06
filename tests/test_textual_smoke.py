@@ -31,6 +31,7 @@ from meeting_notes.app import (  # noqa: E402  (deliberate import-after-skip)
     RecordingView,
 )
 from meeting_notes.config import AppConfig, load_config  # noqa: E402
+from meeting_notes.recording_notes import read_recording_notes, start_note_ledger  # noqa: E402
 from textual.widgets import Button, Footer, Input, ProgressBar, Static, TextArea  # noqa: E402
 
 
@@ -384,7 +385,10 @@ async def test_fake_recorder_starts_and_stops_without_capture_processes(tmp_path
         assert not app.is_recording
         assert not list(app.query(RecordingView))
         assert sidecar.exists()
-        assert processed[0][:3] == ("fake-recording.wav", "Fake meeting", "- durable note")
+        assert processed[0][:2] == ("fake-recording.wav", "Fake meeting")
+        assert processed[0][2] == ""
+        assert len(processed[0][6]) == 1
+        assert processed[0][6][0].text == "- durable note"
         assert processed[0][3] is not None
         app.exit()
 
@@ -436,8 +440,8 @@ def test_recording_context_hides_library_actions(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_recording_notes_persist_to_sidecar_while_typing(tmp_path, monkeypatch):
-    """A crash after typing notes must not lose the current recording context."""
+async def test_recording_notes_commit_to_ledger_before_rendering(tmp_path, monkeypatch):
+    """A committed live note is durable before the UI exposes it in its log."""
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.chdir(tmp_path)
 
@@ -445,18 +449,81 @@ async def test_recording_notes_persist_to_sidecar_while_typing(tmp_path, monkeyp
     audio_path = tmp_path / "recordings" / "2026-08-04-120000.wav"
     app.is_recording = True
     app._active_recording_path = audio_path
+    start_note_ledger(audio_path)
     async with app.run_test() as pilot:
         await app.mount(RecordingView())
         view = app.query_one(RecordingView)
         view.query_one("#meeting-title-input", Input).value = "Client kickoff"
-        view.query_one("#user-notes-input", TextArea).text = "- Ask about timeline"
+        composer = view.query_one("#user-notes-input", TextArea)
+        composer.text = "- [ ] Ask about timeline"
+        assert view.commit_composer()
         await pilot.pause()
 
         sidecar = audio_path.with_suffix(".notes.md")
         assert sidecar.exists()
         content = sidecar.read_text()
         assert "Client kickoff" in content
-        assert "- Ask about timeline" in content
+        assert '"kind":"action"' in content
+        assert "Ask about timeline" in content
+        assert "Ask about timeline" in str(view.query_one("#note-entry-log-content", Static).render())
+        app.exit()
+
+@pytest.mark.asyncio
+async def test_composer_enter_commits_and_shift_enter_stays_in_one_entry(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.chdir(tmp_path)
+    app = MeetingNotesApp()
+    audio_path = tmp_path / "recordings" / "keyboard.wav"
+    app.is_recording = True
+    app.recording_start_time = 100.0
+    app._active_recording_path = audio_path
+    start_note_ledger(audio_path)
+    monkeypatch.setattr(meeting_app.time, "time", lambda: 112.0)
+    async with app.run_test() as pilot:
+        await app.mount(RecordingView())
+        view = app.query_one(RecordingView)
+        composer = view.query_one("#user-notes-input", TextArea)
+        composer.focus()
+        composer.text = "first line"
+        composer.move_cursor((0, len(composer.text)))
+        await pilot.press("shift+enter")
+        await pilot.pause()
+        assert composer.text == "first line\n"
+        composer.insert("https://example.test/cve")
+        await pilot.press("enter")
+        await pilot.pause()
+        assert composer.text == ""
+        assert len(view.entries) == 1
+        assert view.entries[0].offset_s == 12.0
+        assert view.entries[0].text == "first line\nhttps://example.test/cve"
+        app.exit()
+
+@pytest.mark.asyncio
+async def test_edit_and_delete_latest_entry_rewrite_ledger_atomically(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.chdir(tmp_path)
+    app = MeetingNotesApp()
+    audio_path = tmp_path / "recordings" / "edit.wav"
+    app.is_recording = True
+    app._active_recording_path = audio_path
+    start_note_ledger(audio_path)
+    async with app.run_test() as pilot:
+        await app.mount(RecordingView())
+        view = app.query_one(RecordingView)
+        composer = view.query_one("#user-notes-input", TextArea)
+        composer.text = "original"
+        assert view.commit_composer()
+        assert view.edit_latest_entry()
+        assert composer.text.endswith("original")
+        composer.text = "[00:00] edited"
+        assert view.commit_composer()
+        assert view.entries[-1].seq == 1
+        assert view.entries[-1].text == "edited"
+        assert view.delete_latest_entry()
+        assert view.entries == []
+        snapshot = read_recording_notes(audio_path)
+        assert snapshot.entries == []
+        assert not list(audio_path.parent.glob(".*.tmp"))
         app.exit()
 
 @pytest.mark.asyncio

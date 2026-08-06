@@ -10,7 +10,8 @@ import re
 from .meeting_context import split_csv
 
 from .logger import get_logger
-from .live_notes import format_live_notes, parse_live_notes
+from .live_notes import entries_for_prompt, entries_tags, format_live_notes, format_note_entries, parse_live_notes
+from .recording_notes import NoteEntry
 
 logger = get_logger(__name__)
 
@@ -121,6 +122,8 @@ class NoteMaker:
         metadata: Optional[dict] = None,
         user_notes: str = "",
         meeting_start: Optional[datetime] = None,
+        prompt_transcript: Optional[str] = None,
+        entries: Optional[list[NoteEntry]] = None,
     ) -> tuple[str, str, Optional[str]]:
         """Create a markdown note and separate transcript file.
 
@@ -165,8 +168,8 @@ class NoteMaker:
 
                 try:
                     ai_summary = self.summarizer.summarize(
-                        transcript_text,
-                        user_notes=user_notes,
+                        prompt_transcript or transcript_text,
+                        user_notes=entries_for_prompt(entries) if entries is not None else user_notes,
                         attendees=(metadata or {}).get("attendees", ""),
                         glossary=(metadata or {}).get("glossary", ""),
                     )
@@ -174,7 +177,10 @@ class NoteMaker:
                     if "attendees" not in str(exc) and "glossary" not in str(exc):
                         raise
                     # Preserve third-party/older summarizer adapter compatibility.
-                    ai_summary = self.summarizer.summarize(transcript_text, user_notes=user_notes)
+                    ai_summary = self.summarizer.summarize(
+                        prompt_transcript or transcript_text,
+                        user_notes=entries_for_prompt(entries) if entries is not None else user_notes,
+                    )
                 summary = {
                     'word_count': len(transcript_text.split()),
                     'ai_summary': ai_summary,
@@ -234,7 +240,8 @@ class NoteMaker:
             transcript_filename=transcript_filename,
             recording_file=recording_file,
             metadata=metadata or {},
-            user_notes=user_notes
+            user_notes=user_notes,
+            entries=entries,
         )
         note_path.write_text(note_content)
         logger.info(f"Note saved: {note_path}")
@@ -337,7 +344,8 @@ Recording: {recording_file}
         transcript_filename: str,
         recording_file: str,
         metadata: dict,
-        user_notes: str = ""
+        user_notes: str = "",
+        entries: Optional[list[NoteEntry]] = None,
     ) -> str:
         """Generate markdown note file (summary only, no transcript)."""
 
@@ -349,12 +357,12 @@ Recording: {recording_file}
         day_name = day_names[date.weekday()]
         month_dir = date.strftime("%m-%B")
         daily_note_path = f"Daily/{date.strftime('%Y')}/{month_dir}/{date.strftime('%Y-%m-%d')}-{day_name}"
-        live_notes = parse_live_notes(user_notes)
         attendees = metadata.get("attendees", "")
         glossary = metadata.get("glossary", "")
         # Typed roster wins. Only use model-extracted people when no roster exists.
         people = split_csv(attendees) if attendees else getattr(summary.get("ai_summary"), "participants", [])
-        tags = list(dict.fromkeys(["meeting", "auto-generated", *live_notes.tags]))
+        note_tags = entries_tags(entries or []) if entries is not None else parse_live_notes(user_notes).tags
+        tags = list(dict.fromkeys(["meeting", "auto-generated", *note_tags]))
         tags_frontmatter = ", ".join(tags)
 
         frontmatter = f"""---
@@ -394,8 +402,9 @@ This meeting covered several topics. Key themes included: {', '.join(summary['ke
 
 """
 
-        # Render user-captured notes into stable sections without touching AI output.
-        live_notes_section = format_live_notes(live_notes)
+        # Structured ledgers are already parsed at commit time. Old sidecars retain
+        # the legacy parser so historical meetings stay readable.
+        live_notes_section = format_note_entries(entries or []) if entries is not None else format_live_notes(parse_live_notes(user_notes))
         if live_notes_section:
             live_notes_section += "\n\n"
 

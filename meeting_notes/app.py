@@ -30,10 +30,14 @@ from meeting_notes.logger import setup_logging, get_logger
 from meeting_notes.level_meter import MicLevelMeter
 from meeting_notes.device_names import resolve_device_name
 from meeting_notes.recording_notes import (
+    NoteEntry,
+    append_note_entry,
     read_recording_notes,
     remove_recording_notes,
-    write_recording_notes,
+    rewrite_note_ledger,
+    start_note_ledger,
 )
+from meeting_notes.live_notes import bare_marker, format_note_entries, format_offset, parse_note_entry
 from meeting_notes.audio_test_screen import AudioTestScreen
 from meeting_notes.meeting_context import MeetingContext, merge_name_index
 
@@ -126,6 +130,23 @@ class AttendeeSuggester(Suggester):
         return None
 
 
+class NoteComposer(TextArea):
+    """A TextArea whose Enter semantics are explicit commit versus soft newline."""
+
+    def on_key(self, event) -> None:
+        view = self.app.query_one(RecordingView)
+        if event.key == "shift+enter":
+            self.insert("\n")
+            event.prevent_default()
+            event.stop()
+            return
+        if event.key == "enter":
+            view.commit_composer()
+            event.prevent_default()
+            event.stop()
+            return
+
+
 class ActionBar(Horizontal):
     """The recording screen's only command surface."""
 
@@ -191,6 +212,8 @@ class RecordingView(Container):
     def __init__(self, attendee_names: list[str] | None = None) -> None:
         super().__init__()
         self.attendee_names = attendee_names or []
+        self.entries: list[NoteEntry] = []
+        self.editing_seq: int | None = None
 
     def compose(self) -> ComposeResult:
         with Vertical(id="recording-container"):
@@ -219,8 +242,13 @@ class RecordingView(Container):
                     yield Input(placeholder="Proper nouns ASR gets wrong — FileBound, QRadar, CDG…", id="meeting-terms-input")
             yield Static("", id="recording-context-summary")
             with Vertical(id="recording-notes-region"):
-                yield Static("Notes · [ ] action · ? question · #tag · [MM:SS] marker", id="notes-label")
-                yield TextArea(id="user-notes-input")
+                yield Static("Notes · Enter commit · Shift+Enter newline · m marker · [ ] action · ? question · #tag · [MM:SS] marker", id="notes-label")
+                with ScrollableContainer(id="note-entry-log"):
+                    yield Static("[dim]Committed notes appear here.[/dim]", id="note-entry-log-content")
+                with Horizontal(id="note-entry-actions"):
+                    yield Button("Edit latest", id="note-edit-latest", classes="note-entry-action")
+                    yield Button("Delete latest", id="note-delete-latest", classes="note-entry-action danger")
+                yield NoteComposer(id="user-notes-input")
             yield ActionBar()
 
     def watch_elapsed_time(self, elapsed: int) -> None:
@@ -266,6 +294,21 @@ class RecordingView(Container):
         self.state = "paused" if self.app._is_paused() else "recording"
 
     def on_key(self, event) -> None:
+        composer = self.query_one("#user-notes-input", TextArea)
+        if event.key == "shift+enter" and composer.has_focus:
+            composer.insert("\n")
+            event.prevent_default()
+            event.stop()
+            return
+        if event.key == "enter" and composer.has_focus:
+            self.commit_composer()
+            event.prevent_default()
+            event.stop()
+            return
+        if event.key == "m" and not self._has_focused_input() and self.state in {"recording", "paused"}:
+            self.commit_marker()
+            event.prevent_default()
+            return
         if self.state == "confirming_discard":
             if event.key == "y":
                 event.prevent_default()
@@ -304,6 +347,99 @@ class RecordingView(Container):
             event.prevent_default()
             self.app.action_toggle_pause()
 
+    def _render_entry_log(self) -> None:
+        try:
+            glyphs = {"note": "•", "action": "[ ]", "question": "?", "marker": "◆"}
+            content = "\n".join(
+                f"[dim][{format_offset(entry.offset_s)}][/dim] {glyphs[entry.kind]} {entry.text}".rstrip()
+                for entry in self.entries
+            ) or "[dim]Committed notes appear here.[/dim]"
+            self.query_one("#note-entry-log-content", Static).update(content)
+            self.query_one("#note-entry-log", ScrollableContainer).scroll_end(animate=False)
+        except Exception:
+            logger.debug("Could not refresh structured note log", exc_info=True)
+
+    def _commit_entry(self, entry: NoteEntry) -> bool:
+        if not self.app.append_live_note_entry(entry):
+            return False
+        self.entries.append(entry)
+        self._render_entry_log()
+        return True
+
+    def _rewrite_entries(self, entries: list[NoteEntry]) -> bool:
+        context = self._meeting_context()
+        return self.app.persist_recording_context(
+            context.title, entries, context.attendees, context.glossary
+        )
+
+    @staticmethod
+    def _entry_draft(entry: NoteEntry) -> str:
+        prefix = {"note": "", "action": "[ ] ", "question": "? ", "marker": ""}[entry.kind]
+        return f"[{format_offset(entry.offset_s)}] {prefix}{entry.text}".rstrip()
+
+    def edit_latest_entry(self) -> bool:
+        if not self.entries:
+            return False
+        entry = self.entries[-1]
+        self.editing_seq = entry.seq
+        composer = self.query_one("#user-notes-input", TextArea)
+        composer.text = self._entry_draft(entry)
+        composer.move_cursor((len(composer.text.splitlines()) - 1, len(composer.text.splitlines()[-1])))
+        composer.focus()
+        return True
+
+    def delete_latest_entry(self) -> bool:
+        if not self.entries:
+            return False
+        revised = self.entries[:-1]
+        if not self._rewrite_entries(revised):
+            return False
+        self.entries = revised
+        self.editing_seq = None
+        self._render_entry_log()
+        return True
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "note-edit-latest":
+            self.edit_latest_entry()
+            event.stop()
+        elif event.button.id == "note-delete-latest":
+            self.delete_latest_entry()
+            event.stop()
+
+    def commit_composer(self) -> bool:
+        composer = self.query_one("#user-notes-input", TextArea)
+        if not composer.text.strip():
+            return False
+        original = next((entry for entry in self.entries if entry.seq == self.editing_seq), None)
+        entry = parse_note_entry(
+            composer.text,
+            offset_s=original.offset_s if original else self.app.current_recording_offset(),
+            seq=original.seq if original else len(self.entries) + 1,
+        )
+        if original:
+            revised = [entry if existing.seq == original.seq else existing for existing in self.entries]
+            if not self._rewrite_entries(revised):
+                return False
+            self.entries = revised
+            self.editing_seq = None
+            self._render_entry_log()
+            composer.text = ""
+            return True
+        if self._commit_entry(entry):
+            composer.text = ""
+            return True
+        return False
+
+    def commit_marker(self) -> bool:
+        return self._commit_entry(
+            bare_marker(offset_s=self.app.current_recording_offset(), seq=len(self.entries) + 1)
+        )
+
+    def on_text_area_changed(self, event: TextArea.Changed) -> None:
+        # Enter is the durability boundary. Shift+Enter only composes text.
+        return
+
     def on_input_changed(self, event: Input.Changed) -> None:
         if event.input.id in {"meeting-title-input", "meeting-attendees-input", "meeting-terms-input"}:
             if self.state == "preflight" and event.value == "x":
@@ -338,19 +474,15 @@ class RecordingView(Container):
         except Exception:
             pass
 
-    def on_text_area_changed(self, event: TextArea.Changed) -> None:
-        if event.text_area.id == "user-notes-input":
-            self._persist_notes_sidecar()
-
     def _persist_notes_sidecar(self) -> None:
-        """Write the current inputs atomically while the recording is live."""
+        """Atomically rewrite ledger metadata after title/roster/glossary edits."""
         try:
             context = self._meeting_context()
-            self.app.persist_recording_notes(
-                context.title, context.notes, context.attendees, context.glossary
+            self.app.persist_recording_context(
+                context.title, self.entries, context.attendees, context.glossary
             )
         except Exception:
-            logger.debug("Could not persist live recording notes", exc_info=True)
+            logger.debug("Could not persist recording context", exc_info=True)
 
     def _has_focused_input(self) -> bool:
         try:
@@ -970,9 +1102,34 @@ class MeetingNotesApp(App):
         color: $text-muted;
     }
 
+    #note-entry-log {
+        height: 1fr;
+        width: 100%;
+        border: solid $panel-lighten-1;
+    }
+
+    #note-entry-log-content {
+        width: 100%;
+        padding: 0 1;
+    }
+
+    #note-entry-actions {
+        height: 2;
+        width: 100%;
+        align: left middle;
+    }
+
+    .note-entry-action {
+        height: 1;
+        min-width: 14;
+        margin-right: 1;
+    }
+
+    .note-entry-action.danger { color: $error; }
+
     #user-notes-input {
         width: 100%;
-        height: 1fr;
+        height: 3;
     }
 
     ActionBar {
@@ -1173,34 +1330,56 @@ class MeetingNotesApp(App):
         else:
             logger.debug("Startup cleanup did not remove any recordings from %s", recordings_dir)
 
-    def persist_recording_notes(self, title: str, notes: str, attendees: str = "", glossary: str = "") -> None:
-        """Atomically checkpoint live title/notes beside the active recording WAV."""
+    def current_recording_offset(self) -> float:
+        """Return the same pause-adjusted clock displayed in RecordingView."""
+        if not self.recording_start_time:
+            return 0.0
+        return max(0.0, time.time() - self.recording_start_time - self._paused_duration())
+
+    def append_live_note_entry(self, entry: NoteEntry) -> bool:
+        """Durably append an entry before RecordingView renders it."""
         if not self.is_recording or self._active_recording_path is None:
-            return
+            return False
         try:
-            write_recording_notes(
-                self._active_recording_path, title=title, notes=notes,
-                attendees=attendees, glossary=glossary,
-            )
+            append_note_entry(self._active_recording_path, entry)
+            return True
         except Exception as exc:  # noqa: BLE001
-            logger.warning("Failed to persist recording notes sidecar: %s", exc)
+            logger.warning("Failed to append live note entry: %s", exc)
+            self.notify("Note was not saved", severity="error")
+            return False
+
+    def persist_recording_context(
+        self, title: str, entries: list[NoteEntry], attendees: str = "", glossary: str = ""
+    ) -> bool:
+        """Atomically rewrite ledger metadata after an infrequent context edit."""
+        if not self.is_recording or self._active_recording_path is None:
+            return False
+        try:
+            rewrite_note_ledger(
+                self._active_recording_path, title=title, attendees=attendees,
+                glossary=glossary, entries=entries,
+            )
+            return True
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Failed to persist recording context: %s", exc)
+            return False
 
     def _load_final_recording_notes(
-        self, title: str | None, notes: str, attendees: str = "", glossary: str = ""
-    ) -> tuple[str | None, str, str, str]:
-        """Flush and read the durable sidecar before handing notes to processing."""
+        self, title: str | None, attendees: str = "", glossary: str = ""
+    ) -> tuple[str | None, str, str, str, list[NoteEntry] | None]:
+        """Read the durable ledger before processing, retaining legacy sidecars."""
         if self._active_recording_path is None:
-            return title, notes, attendees, glossary
-        self.persist_recording_notes(title or "", notes, attendees, glossary)
+            return title, "", attendees, glossary, []
         try:
             snapshot = read_recording_notes(self._active_recording_path)
-            return (
-                snapshot.title.strip() or None, snapshot.notes,
-                snapshot.attendees, snapshot.glossary,
-            )
+            if snapshot.is_legacy:
+                # Old freeform notes must remain usable, but their historic body
+                # has no honest per-entry timing. NoteMaker takes this legacy path.
+                return snapshot.title.strip() or None, snapshot.notes, snapshot.attendees, snapshot.glossary, None
+            return snapshot.title.strip() or None, "", snapshot.attendees, snapshot.glossary, snapshot.entries
         except (FileNotFoundError, ValueError) as exc:
             logger.warning("Could not reload recording notes sidecar: %s", exc)
-            return title, notes, attendees, glossary
+            return title, "", attendees, glossary, []
 
     def compose(self) -> ComposeResult:
         """Build the UI."""
@@ -1866,8 +2045,14 @@ class MeetingNotesApp(App):
                 self.recording_start_time = time.time()
                 self.recording_started_at = datetime.now()
                 self._active_recording_path = getattr(self.recorder, "current_file", None)
-                self.persist_recording_notes(
-                    "", "", "", ", ".join(self.config.meeting_terms)
+                if self._active_recording_path is None:
+                    raise RuntimeError("Recorder did not supply an active recording path")
+                recording_view = self.query_one(RecordingView)
+                start_note_ledger(
+                    self._active_recording_path,
+                    title=recording_view.query_one("#meeting-title-input", Input).value,
+                    attendees=recording_view.query_one("#meeting-attendees-input", Input).value,
+                    glossary=recording_view.query_one("#meeting-terms-input", Input).value or ", ".join(self.config.meeting_terms),
                 )
                 # Reset mid-recording warning state for this session
                 self._warned_misrouted_apps = set()
@@ -2091,16 +2276,13 @@ class MeetingNotesApp(App):
                     
                     attendees = recording_view.query_one("#meeting-attendees-input", Input).value
                     glossary = recording_view.query_one("#meeting-terms-input", Input).value
-                    # Get user notes from text area
-                    notes_input = recording_view.query_one("#user-notes-input", TextArea)
-                    user_notes = notes_input.text.strip() if notes_input.text else ""
-                    if user_notes:
-                        logger.info(f"User notes captured: {len(user_notes)} characters")
+                    # Stop is also a safe last-chance commit for the composer.
+                    recording_view.commit_composer()
                 except Exception:
-                    pass  # No title input found
+                    pass  # Recording view may already be gone
 
-                meeting_title, user_notes, attendees, glossary = self._load_final_recording_notes(
-                    meeting_title, user_notes, attendees, glossary
+                meeting_title, user_notes, attendees, glossary, entries = self._load_final_recording_notes(
+                    meeting_title, attendees, glossary
                 )
                 updated_index = merge_name_index(self.config.attendee_name_index, attendees)
                 if updated_index != self.config.attendee_name_index:
@@ -2182,7 +2364,7 @@ class MeetingNotesApp(App):
                 self._set_processing_status("Loading transcription model…", meeting_title or "")
                 self.notify("Processing recording...", severity="information")
                 self.process_recording(
-                    audio_path, meeting_title, user_notes, recording_started_at, attendees, glossary
+                    audio_path, meeting_title, user_notes, recording_started_at, attendees, glossary, entries
                 )
                 
             except Exception as e:
@@ -2199,6 +2381,7 @@ class MeetingNotesApp(App):
         meeting_start: Optional[datetime] = None,
         attendees: str = "",
         glossary: str = "",
+        entries: Optional[list[NoteEntry]] = None,
     ) -> None:
         """Process recording in background thread."""
         logger.info(f"Processing recording: {audio_path}")
@@ -2234,11 +2417,13 @@ class MeetingNotesApp(App):
             )
             self.call_from_thread(self.notify, f"✓ Transcribed {word_count} words. Generating AI summary...", severity="information")
             
-            # Format transcript
+            # Keep exported transcript formatting unchanged; the summary receives
+            # a compact one-line-per-segment rendering for temporal alignment.
             formatted = '\n\n'.join([
                 f'**[{int(seg.start // 60):02d}:{int(seg.start % 60):02d}]** {seg.text.strip()}'
                 for seg in result.segments
             ])
+            prompt_transcript = self.transcriber.format_transcript_for_prompt(result)
             
             # Generate note with AI summary (pass custom title if provided)
             logger.info("Creating note with AI summary")
@@ -2251,6 +2436,8 @@ class MeetingNotesApp(App):
                 user_notes=user_notes,
                 metadata={"attendees": attendees, "glossary": glossary},
                 meeting_start=meeting_start,
+                prompt_transcript=prompt_transcript,
+                entries=entries,
             )
             
             # Update UI

@@ -239,6 +239,12 @@ class WhisperTranscriber:
             duration=duration,
         )
 
+    def format_transcript_for_prompt(self, result: TranscriptResult) -> str:
+        """Format one timestamped line per Whisper segment for summary alignment."""
+        return "\n".join(
+            f"[{self._format_timestamp(seg.start)}] {seg.text}" for seg in result.segments
+        )
+
     def format_transcript_with_timestamps(self, result: TranscriptResult) -> str:
         """Format transcript with timestamps for each segment."""
         lines = []
