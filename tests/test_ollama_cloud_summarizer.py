@@ -52,6 +52,23 @@ Adam
     assert summary.overview == "The upgrade completed."
 
 
+def test_ollama_cloud_uses_extended_budget_for_long_transcript(monkeypatch):
+    calls = []
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            calls.append(kwargs)
+            return _response("TITLE:\nLong review\nOVERVIEW:\nComplete.\nKEY POINTS:\n- One")
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs):
+            self.chat = SimpleNamespace(completions=FakeCompletions())
+
+    monkeypatch.setitem(sys.modules, "openai", SimpleNamespace(OpenAI=FakeOpenAI))
+    OllamaCloudSummarizer(api_key="test-key").summarize("word " * 6001)
+    assert calls[0]["max_tokens"] == 16384
+
+
 def test_ollama_cloud_rejects_empty_visible_content(monkeypatch):
     class FakeCompletions:
         def create(self, **kwargs):

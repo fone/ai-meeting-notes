@@ -498,10 +498,18 @@ class OllamaCloudSummarizer(BaseSummarizer):
     # Default model for meeting summarization
     DEFAULT_MODEL = "kimi-k2.6"
     API_BASE = "https://ollama.com/v1"
-    # Kimi spends a substantial portion of its output budget reasoning before it
-    # emits visible text. 4096 is enough to return a successful HTTP response
-    # with *zero* summary content for a normal long meeting.
+    # Kimi emits hidden reasoning before visible content. Short calls regularly
+    # fit in 8192; long recordings do not, and a second identical retry is waste.
     MAX_OUTPUT_TOKENS = 8192
+    LONG_TRANSCRIPT_OUTPUT_TOKENS = 16384
+    LONG_TRANSCRIPT_WORDS = 6000
+
+    def _output_budget(self, transcript: str) -> int:
+        return (
+            self.LONG_TRANSCRIPT_OUTPUT_TOKENS
+            if len(transcript.split()) > self.LONG_TRANSCRIPT_WORDS
+            else self.MAX_OUTPUT_TOKENS
+        )
 
     def __init__(self, api_key: Optional[str] = None, model: str = ""):
         self.api_key = api_key or os.getenv("OLLAMA_API_KEY")
@@ -533,7 +541,7 @@ class OllamaCloudSummarizer(BaseSummarizer):
                     model=self.model,
                     messages=[{"role": "user", "content": self._build_prompt(transcript, user_notes=user_notes, attendees=attendees, glossary=glossary)}],
                     temperature=0.3,
-                    max_tokens=self.MAX_OUTPUT_TOKENS,
+                    max_tokens=self._output_budget(transcript),
                 )
 
                 # Calculate cost (Ollama Cloud pricing varies)
