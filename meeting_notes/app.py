@@ -1534,16 +1534,16 @@ class MeetingNotesApp(App):
             if not on_target:
                 lines.append(
                     "[yellow]⚠ Capturing system audio from: "
-                    f"{target_label} · no active audio there[/yellow]"
+                    f"{target_label} · no direct app streams there[/yellow]"
                 )
             if elsewhere:
-                # Surface mis-routed audio so the user can fix it on the fly.
-                # "Playing elsewhere" alone was too vague: this means it will
-                # not land in the current recording.
+                # A direct app route can land on a virtual sink (notably
+                # EasyEffects) that still feeds the captured hardware sink.
+                # Treat it as topology information, not proof of data loss.
                 pairs = ", ".join(
                     f"{app} → {sink}" for app, sink in elsewhere[:3]
                 )
-                lines.append(f"[red]Not being recorded:[/red] {pairs}")
+                lines.append(f"[dim]Direct app route:[/dim] {pairs}")
             self._render_routing_block(widget, lines)
 
             # Surface a TOAST notification when a meeting-style app appears
@@ -1564,9 +1564,9 @@ class MeetingNotesApp(App):
                     continue
                 self._warned_misrouted_apps.add(app)
                 msg = (
-                    f"⚠ {app} just started playing on {sink_name} — "
-                    f"you're capturing {target_sink}. "
-                    f"This audio will NOT be in your meeting notes."
+                    f"⚠ {app} is routed to {sink_name}; "
+                    f"capture monitor is {target_sink}. Check the SYS meter — "
+                    f"virtual output routes may still feed the recording."
                 )
                 logger.warning(f"misrouted-app alert: {msg}")
                 try:
