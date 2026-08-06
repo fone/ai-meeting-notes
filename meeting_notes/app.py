@@ -1538,7 +1538,10 @@ class MeetingNotesApp(App):
         normal = "MIC" if stream == "mic" else "SYS"
         try:
             label = self.query_one(RecordingView).query_one(label_id, Static)
-            label.update(f"{normal} SILENT?" if silent else normal)
+            # This is a 15-second quiet-period latch, not a failed capture.
+            # Keep the label factual so a normal lull in a call does not look
+            # like the recorder has lost system audio.
+            label.update(f"{normal} QUIET 15s" if silent else normal)
             label.set_class(silent, "silence-warning")
         except Exception:
             pass

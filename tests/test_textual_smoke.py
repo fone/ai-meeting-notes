@@ -199,7 +199,7 @@ async def test_meter_silence_label_presentation_clears_on_signal_return(tmp_path
         assert silent
         app._set_meter_label("mic", silent=silent)
         label = view.query_one("#level-meter-label", Static)
-        assert str(label.render()) == "MIC SILENT?"
+        assert str(label.render()) == "MIC QUIET 15s"
         assert label.has_class("silence-warning")
 
         _, warned, silent = app._format_level_bar(0.1, "mic", now=115.1)
