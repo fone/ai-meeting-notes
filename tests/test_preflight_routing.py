@@ -32,5 +32,5 @@ async def test_preflight_renders_routing_warning(tmp_path, monkeypatch):
         await pilot.pause()
         routing = app.query_one(RecordingView).query_one("#audio-sources-list")
         assert routing.display
-        assert "Nothing routing" in str(routing.render())
+        assert "Capturing system audio from" in str(routing.render())
         app.exit()

@@ -227,10 +227,10 @@ async def test_routing_block_collapses_when_healthy(tmp_path, monkeypatch):
         await pilot.pause()
         assert not routing.display
 
-        app._render_routing_block(routing, ["[yellow]⚠ Nothing routing to the captured sink right now[/yellow]"])
+        app._render_routing_block(routing, ["[yellow]⚠ Capturing system audio from: Test Sink · no active audio there[/yellow]"])
         await pilot.pause()
         assert routing.display
-        assert "Nothing routing" in str(routing.render())
+        assert "Capturing system audio from" in str(routing.render())
         app.exit()
 
 
@@ -245,7 +245,7 @@ async def test_routing_warning_waits_for_stable_health_before_collapsing(tmp_pat
         await app.mount(view)
         await pilot.pause()
         routing = view.query_one("#audio-sources-list", Static)
-        warning = ["[yellow]⚠ Nothing routing to the captured sink right now[/yellow]"]
+        warning = ["[yellow]⚠ Capturing system audio from: Test Sink · no active audio there[/yellow]"]
 
         app._render_routing_block(routing, warning)
         monkeypatch.setattr(meeting_app.time, "monotonic", lambda: 100.0)
@@ -296,7 +296,7 @@ async def test_routing_block_uses_existing_detection_but_hides_healthy_copy(tmp_
         app.update_audio_sources_panel()
         await pilot.pause()
         assert routing.display
-        assert "Nothing routing" in str(routing.render())
+        assert "Capturing system audio from" in str(routing.render())
         app.exit()
 
 
@@ -345,10 +345,11 @@ async def test_fake_recorder_starts_and_stops_without_capture_processes(tmp_path
 
     fake = FakeRecorder()
     processed = []
+    meter_calls = []
     async with app.run_test(size=(80, 24)) as pilot:
         app.recorder = fake
-        monkeypatch.setattr(app, "_start_level_meter", lambda: None)
-        monkeypatch.setattr(app, "_stop_level_meter", lambda: None)
+        monkeypatch.setattr(app, "_start_level_meter", lambda: meter_calls.append("start"))
+        monkeypatch.setattr(app, "_stop_level_meter", lambda: meter_calls.append("stop"))
         monkeypatch.setattr(app, "update_audio_sources_panel", lambda: None)
         monkeypatch.setattr(app, "process_recording", lambda *args: processed.append(args))
         await app.action_start_recording()
@@ -359,6 +360,9 @@ async def test_fake_recorder_starts_and_stops_without_capture_processes(tmp_path
         await pilot.pause()
         assert fake.started
         assert app.is_recording
+        # Capture may resolve a different sink than preflight. The meters must
+        # be rebound so they show the source being written to disk.
+        assert meter_calls == ["start", "stop", "start"]
         recording_view = app.query_one(RecordingView)
         footer = app.query_one(Footer)
         action_bar = recording_view.query_one(ActionBar)

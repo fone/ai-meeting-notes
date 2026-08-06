@@ -1529,17 +1529,21 @@ class MeetingNotesApp(App):
                 else:
                     elsewhere.append((label, sink_name))
 
+            target_label = resolve_device_name(target_sink, kind="sink")
             lines = []
             if not on_target:
                 lines.append(
-                    "[yellow]⚠ Nothing routing to the captured sink right now[/yellow]"
+                    "[yellow]⚠ Capturing system audio from: "
+                    f"{target_label} · no active audio there[/yellow]"
                 )
             if elsewhere:
-                # Surface mis-routed audio so the user can fix it on the fly
+                # Surface mis-routed audio so the user can fix it on the fly.
+                # "Playing elsewhere" alone was too vague: this means it will
+                # not land in the current recording.
                 pairs = ", ".join(
                     f"{app} → {sink}" for app, sink in elsewhere[:3]
                 )
-                lines.append(f"[red]Playing elsewhere:[/red] {pairs}")
+                lines.append(f"[red]Not being recorded:[/red] {pairs}")
             self._render_routing_block(widget, lines)
 
             # Surface a TOAST notification when a meeting-style app appears
@@ -1907,13 +1911,18 @@ class MeetingNotesApp(App):
                 audio_info_widget = recording_view.query_one("#audio-device-info", Static)
                 audio_info_widget.update(audio_info_text)
                 
+                # Preflight meters are bound to the sink that was active when
+                # preflight opened. Capture resolves the sink again immediately
+                # before recording, so rebind the meters here. Otherwise the
+                # UI can display levels from the old sink while the WAV records
+                # the newly resolved one.
+                self._stop_level_meter()
+                self._start_level_meter()
+
                 # Start timer updates (every 1 second)
                 self.timer_interval = self.set_interval(1.0, self.update_recording_timer)
 
-                # Start the live level meters (mic + system audio).
-                # Real-time visual feedback that audio is actually arriving
-                # — and CRUCIALLY that system-audio capture isn't silent.
-                self._start_level_meter()
+                # The meters are now bound to the exact source recorded to disk.
 
                 # Refresh the "what is playing right now" list every 3 seconds
                 # so the user can see when meeting participants start/stop

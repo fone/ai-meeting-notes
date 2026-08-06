@@ -244,16 +244,12 @@ def _sink_index_to_name() -> dict[str, str]:
 
 
 def _is_wav_effectively_silent(path: Path, threshold: int = 200) -> bool:
-    """Sample a WAV file and return True if it appears to be all silence.
+    """Return True only when an s16 WAV contains no signal above ``threshold``.
 
-    Reads up to ~1 second of audio from the start, middle and end of the
-    file (cheap, bounded I/O even for hour-long recordings) and returns
-    True only if the peak amplitude across all sampled regions is below
-    ``threshold`` (default ~-50 dBFS, well below any real noise floor).
-
-    Used as a fast post-stop diagnostic so the app can warn the user that
-    a leg of combined-mode capture produced no usable signal — without
-    blocking the UI on a full file scan.
+    Capture legs can contain short, intermittent speech or playback. The prior
+    start/middle/end probe missed those real signals and produced a false
+    "silent" verdict. Read one-second chunks until signal is found; this exits
+    quickly for normal calls and scans a truly silent file only when needed.
     """
     import wave
 
@@ -265,23 +261,14 @@ def _is_wav_effectively_silent(path: Path, threshold: int = 200) -> bool:
                 return False  # not s16, don't claim silence we can't measure
             rate = wf.getframerate()
             n_frames = wf.getnframes()
-            channels = wf.getnchannels()
             if rate == 0 or n_frames == 0:
                 return True
-            frames_per_probe = rate  # 1 second
-            bytes_per_frame = 2 * channels
-
-            offsets = [0]
-            if n_frames > frames_per_probe * 3:
-                offsets.append(max((n_frames // 2) - (frames_per_probe // 2), 0))
-                offsets.append(max(n_frames - frames_per_probe, 0))
-
+            frames_per_probe = rate  # one second, including all channels
             peak = 0
-            for off in offsets:
-                wf.setpos(off)
+            while True:
                 raw = wf.readframes(frames_per_probe)
                 if not raw:
-                    continue
+                    break
                 try:
                     import audioop  # type: ignore[import]
 
@@ -298,11 +285,10 @@ def _is_wav_effectively_silent(path: Path, threshold: int = 200) -> bool:
                             v = 32767
                         if v > p:
                             p = v
-                if p > peak:
-                    peak = p
+                peak = max(peak, p)
                 if peak >= threshold:
                     return False
-            return peak < threshold
+            return True
     except Exception as exc:
         logger.debug(f"silence check on {path} failed: {exc}")
         return False
