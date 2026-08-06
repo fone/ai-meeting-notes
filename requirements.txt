@@ -1,7 +1,9 @@
-# Pinned dev install (everything). For packaging/optional extras see pyproject.toml.
+# Production install: Turbo transcription, UI, and bundled cloud-provider clients.
+# This deliberately excludes openai-whisper/Torch. Turbo uses faster-whisper
+# and does not need a multi-gigabyte PyTorch/CUDA download. Legacy Whisper
+# models are an explicit optional extra in pyproject.toml.
 # Core
 textual>=0.50.0
-openai-whisper>=20231117
 faster-whisper>=1.2.1
 pyyaml>=6.0
 

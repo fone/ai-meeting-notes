@@ -56,6 +56,7 @@ jobs:
         run: |
           pytest -v \
             tests/test_config.py \
+            tests/test_packaging_contract.py \
             tests/test_paths_and_fallbacks.py \
             tests/test_recording_retention.py \
             tests/test_summarizers.py \

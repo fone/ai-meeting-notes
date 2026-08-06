@@ -1,170 +1,162 @@
-#!/bin/bash
-# Main setup script for Meeting Notes AI
+#!/usr/bin/env bash
+# One-command bootstrap for the production Linux path.
+# Installs audio tools, Python dependencies, and optionally prefetches the
+# faster-whisper Turbo model so the first meeting does not pause for a download.
+set -euo pipefail
 
-set -e
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+VENV="$ROOT/venv"
+ASSUME_YES=false
+SKIP_SYSTEM=false
+SKIP_MODEL=false
 
-echo "======================================"
-echo "  Meeting Notes AI - Setup"
-echo "======================================"
-echo ""
+usage() {
+    cat <<'EOF'
+Usage: ./setup.sh [--yes] [--skip-system-packages] [--skip-model-download]
 
-# Check if already configured
-CONFIG_FILE="$HOME/.config/meeting-notes/config.yaml"
-if [ -f "$CONFIG_FILE" ]; then
-    echo "ℹ️  Existing configuration detected at:"
-    echo "   $CONFIG_FILE"
-    echo ""
-    echo "⚠️  Running this setup may overwrite your current settings."
-    echo ""
-    echo "If you just want to change one setting, you can:"
-    echo "  • Press ',' in the app to open settings"
-    echo "  • Or manually edit: $CONFIG_FILE"
-    echo ""
-    read -p "Continue with setup anyway? (y/n): " CONTINUE_SETUP
-    
-    if [ "$CONTINUE_SETUP" != "y" ] && [ "$CONTINUE_SETUP" != "Y" ]; then
-        echo ""
-        echo "Setup cancelled. No changes made."
-        exit 0
-    fi
-    echo ""
-fi
+  --yes                    Accept install and Turbo-download prompts.
+  --skip-system-packages   Do not install missing Linux packages.
+  --skip-model-download    Install the app but defer the Turbo model download.
+EOF
+}
 
-# Detect python command
-if command -v python &> /dev/null; then
-    PYTHON=python
-else
-    PYTHON=python3
-fi
-
-# Check if running in virtual environment
-if [ -z "$VIRTUAL_ENV" ]; then
-    echo "Creating virtual environment..."
-    $PYTHON -m venv venv
-    echo "Virtual environment created"
-    echo ""
-    echo "Please activate the virtual environment and run this script again:"
-    echo "   source venv/bin/activate"
-    echo "   ./setup.sh"
-    exit 0
-fi
-
-echo "Virtual environment detected: $VIRTUAL_ENV"
-echo ""
-
-# Check system dependencies
-echo "Checking system dependencies..."
-
-if ! command -v pactl &> /dev/null; then
-    echo "ERROR: pactl not found. Please install pulseaudio-utils:"
-    echo "   Arch:           sudo pacman -S pulseaudio-utils"
-    echo "   Ubuntu/Debian:  sudo apt install pulseaudio-utils"
-    exit 1
-fi
-
-if ! command -v ffmpeg &> /dev/null; then
-    echo "ERROR: ffmpeg not found. Please install it:"
-    echo "   Arch:           sudo pacman -S ffmpeg"
-    echo "   Ubuntu/Debian:  sudo apt install ffmpeg"
-    exit 1
-fi
-
-echo "System dependencies OK"
-echo ""
-
-# Install Python dependencies
-echo "Installing Python dependencies..."
-pip install --upgrade pip
-pip install -r requirements.txt
-
-echo ""
-echo "======================================"
-echo "  AI Provider Setup"
-echo "======================================"
-echo ""
-echo "Choose your AI summarization provider:"
-echo ""
-echo "  1) Cloud AI (Recommended)"
-echo "     - Fast, high-quality summaries"
-echo "     - Choose: OpenAI, Anthropic, or OpenRouter"
-echo "     - Requires API key (~$0.01 per meeting)"
-echo ""
-echo "  2) Local AI (Ollama)"
-echo "     - Free, runs on your machine"
-echo "     - Requires Ollama installation"
-echo "     - Slower, uses system resources"
-echo ""
-echo "  3) Skip AI setup (transcription only)"
-echo "     - No summarization"
-echo "     - Can configure later in settings"
-echo ""
-
-while true; do
-    read -p "Enter choice [1-3]: " choice
-    
-    case $choice in
-        1)
-            echo ""
-            echo "Running cloud AI setup..."
-            echo ""
-            echo "You'll choose between OpenAI, Anthropic, or OpenRouter."
-            echo "Note: You'll be prompted before any existing settings are changed."
-            echo ""
-            ./setup_cloud.sh
-            break
-            ;;
-        2)
-            echo ""
-            echo "Setting up local AI (Ollama)..."
-            echo ""
-            
-            if ! command -v ollama &> /dev/null; then
-                echo "Ollama not found. Installing..."
-                curl -fsSL https://ollama.com/install.sh | sh
-            else
-                echo "Ollama already installed"
-            fi
-            
-            echo ""
-            echo "Pulling recommended model (llama3.2:3b)..."
-            ollama pull llama3.2:3b
-            
-            echo ""
-            echo "Local AI setup complete!"
-            echo ""
-            echo "Note: You can change the model in settings (press ',' in app)"
-            break
-            ;;
-        3)
-            echo ""
-            echo "Skipping AI setup"
-            echo ""
-            echo "You can configure AI later by:"
-            echo "  - Pressing ',' in the app"
-            echo "  - Or running ./setup_cloud.sh for cloud AI"
-            break
-            ;;
-        *)
-            echo "Invalid choice. Please enter 1, 2, or 3."
-            ;;
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --yes) ASSUME_YES=true ;;
+        --skip-system-packages) SKIP_SYSTEM=true ;;
+        --skip-model-download) SKIP_MODEL=true ;;
+        -h|--help) usage; exit 0 ;;
+        *) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
     esac
+    shift
 done
 
-echo ""
-echo "======================================"
-echo "  Setup Complete!"
-echo "======================================"
-echo ""
-echo "To run the application:"
-echo "   $PYTHON run.py"
-echo ""
-echo "Keyboard shortcuts:"
-echo "   r - Start recording"
-echo "   s - Stop recording"
-echo "   , - Open settings"
-echo "   q - Quit"
-echo ""
-echo "Note: First transcription will download Whisper base model (~140MB)"
-echo ""
-echo "For more information, see README.md"
-echo ""
+require_command() {
+    command -v "$1" >/dev/null 2>&1
+}
+
+confirm() {
+    local prompt="$1"
+    if "$ASSUME_YES"; then
+        return 0
+    fi
+    if [[ ! -t 0 ]]; then
+        return 1
+    fi
+    local answer
+    read -r -p "$prompt [Y/n] " answer
+    [[ -z "$answer" || "$answer" =~ ^[Yy]$ ]]
+}
+
+detect_installer() {
+    if require_command apt-get; then
+        INSTALLER="apt"
+        PACKAGES=(python3 python3-venv python3-pip ffmpeg pulseaudio-utils pipewire-bin)
+    elif require_command pacman; then
+        INSTALLER="pacman"
+        PACKAGES=(python python-pip ffmpeg pulseaudio pipewire)
+    else
+        echo "Unsupported package manager. Install Python 3.10+, ffmpeg, pactl, and pw-record or parec manually." >&2
+        exit 1
+    fi
+}
+
+install_system_packages() {
+    local missing=()
+    require_command python3 || missing+=(python3)
+    require_command ffmpeg || missing+=(ffmpeg)
+    require_command pactl || missing+=(pactl)
+    if ! require_command pw-record && ! require_command parec; then
+        missing+=(pw-record-or-parec)
+    fi
+
+    if [[ ${#missing[@]} -eq 0 ]]; then
+        echo "✓ System recording dependencies are present."
+        return
+    fi
+
+    echo "Missing runtime commands: ${missing[*]}"
+    if "$SKIP_SYSTEM"; then
+        echo "Refusing to continue without required audio dependencies." >&2
+        exit 1
+    fi
+
+    detect_installer
+    echo "This will install: ${PACKAGES[*]}"
+    if ! confirm "Install missing system dependencies with sudo?"; then
+        echo "Install cancelled. Required commands: python3, ffmpeg, pactl, and pw-record or parec." >&2
+        exit 1
+    fi
+
+    if [[ "$INSTALLER" == "apt" ]]; then
+        sudo apt-get update
+        sudo apt-get install -y "${PACKAGES[@]}"
+    else
+        sudo pacman -S --needed --noconfirm "${PACKAGES[@]}"
+    fi
+}
+
+prefetch_turbo() {
+    if "$SKIP_MODEL"; then
+        echo "Skipping Turbo model download. It will download on first transcription."
+        return
+    fi
+    if ! confirm "Download the production faster-whisper Turbo model now?"; then
+        echo "Skipping Turbo model download. It will download on first transcription."
+        return
+    fi
+
+    echo "Downloading and loading faster-whisper Turbo on CPU. This may take several minutes."
+    "$VENV/bin/python" - <<'PY'
+from meeting_notes.transcriber import WhisperTranscriber
+
+transcriber = WhisperTranscriber(model_name="turbo", device="cpu")
+transcriber.load_model()
+assert transcriber.backend == "faster_whisper"
+print("✓ Turbo model is ready for the first meeting.")
+PY
+}
+
+main() {
+    echo "== AI Meeting Notes production setup =="
+    install_system_packages
+
+    if ! require_command python3; then
+        echo "python3 is required after package installation." >&2
+        exit 1
+    fi
+
+    if [[ ! -x "$VENV/bin/python" ]]; then
+        echo "Creating virtual environment at $VENV"
+        python3 -m venv "$VENV"
+    fi
+
+    echo "Installing Python dependencies"
+    "$VENV/bin/python" -m pip install --upgrade pip
+    "$VENV/bin/python" -m pip install -r "$ROOT/requirements.txt"
+
+    "$VENV/bin/python" - <<'PY'
+from faster_whisper import WhisperModel  # noqa: F401
+from meeting_notes.config import load_config
+
+config = load_config()
+assert config.whisper_model == "turbo"
+print("✓ Python dependencies installed. Default transcription model: turbo.")
+PY
+
+    prefetch_turbo
+
+    cat <<'EOF'
+
+Setup complete.
+
+1. Start the app:       ./venv/bin/python run.py
+2. Press , and choose an AI provider. Choose “No AI” if you want transcription-only.
+3. Join a real call, press r, and confirm both MIC and SYS meters move in READY TO RECORD.
+4. Click Start Recording. Your first recorded meeting now uses Turbo locally on CPU.
+
+If meeting audio is routed to a different output, select that output in Settings before recording.
+EOF
+}
+
+main "$@"

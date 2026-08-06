@@ -74,11 +74,11 @@ def test_theme_roundtrips_through_config():
     assert AppConfig.from_dict(cfg.to_dict()).theme == "dracula"
 
 
-def test_default_provider_is_anthropic():
-    """Sanity check: the default cloud provider hasn't drifted."""
+def test_default_provider_needs_no_credential():
+    """A fresh install opens before the user chooses an AI provider."""
     cfg = AppConfig()
-    assert cfg.ai_provider == "anthropic"
-    assert cfg.ai_model == "haiku"
+    assert cfg.ai_provider == "none"
+    assert cfg.ai_model == ""
 
 
 def test_validate_rejects_unknown_provider():

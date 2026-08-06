@@ -16,8 +16,10 @@ logger = get_logger(__name__)
 class AppConfig:
     """Application configuration."""
     # AI Summarization
-    ai_provider: str = "anthropic"  # "openai", "anthropic", "openrouter", "ollama_cloud", "local", or "none"
-    ai_model: str = "haiku"  # Model tier (varies by provider)
+    # Fresh installs must open cleanly without a provider credential. The user
+    # selects a provider from Settings when ready; transcription still works.
+    ai_provider: str = "none"  # "openai", "anthropic", "openrouter", "ollama_cloud", "local", or "none"
+    ai_model: str = ""  # Provider-specific model ID or tier, configured in Settings
     
     # API Keys (or set environment variables)
     openai_api_key: str = ""  # OPENAI_API_KEY
