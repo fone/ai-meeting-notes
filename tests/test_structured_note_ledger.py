@@ -1,7 +1,9 @@
 from datetime import datetime
 from pathlib import Path
 
-from meeting_notes.live_notes import entries_for_prompt, format_note_entries, parse_note_entry
+from meeting_notes.live_notes import (
+    entries_for_prompt, format_note_entries, format_speaker_anchors, parse_note_entry,
+)
 from meeting_notes.note_maker import NoteMaker
 from meeting_notes.recording_notes import (
     NoteEntry,
@@ -116,6 +118,35 @@ def test_note_maker_sends_timestamped_transcript_to_actual_summarizer(tmp_path):
         meeting_start=datetime(2026, 8, 6, 9),
     )
     assert capture.transcript == "[00:12] segment one\n[00:19] segment two"
+
+
+def test_speaker_anchors_parse_in_any_leading_order_and_omit_mid_entry_mentions():
+    roster = ["Pete Jones", "Russell", "Chris"]
+    action = parse_note_entry("[ ] @Pete Jones [-2m] deliver TPM", offset_s=574, seq=1, roster=roster)
+    note = parse_note_entry("[08:12] @Russell raised CDG", offset_s=600, seq=2, roster=roster)
+    mention = parse_note_entry("Follow up with @Chris about the patch", offset_s=640, seq=3, roster=roster)
+    off_roster = parse_note_entry("@Josh Exchange update", offset_s=612, seq=4, roster=roster)
+
+    assert (action.kind, action.offset_s, action.speaker, action.text) == ("action", 454, "Pete Jones", "deliver TPM")
+    assert (note.offset_s, note.speaker, note.text) == (492, "Russell", "raised CDG")
+    assert mention.speaker is None
+    assert off_roster.speaker == "Josh"
+    assert format_speaker_anchors([off_roster, note, action]) == "[07:34] Pete Jones\n[08:12] Russell\n[10:12] Josh"
+
+
+def test_speaker_anchor_prompt_is_optional_asymmetric_and_prevents_over_extension():
+    prompt = build_prompt(
+        "[00:20] I will patch it\n[22:10] I will own the migration",
+        attendees="Russell, Josh", speaker_anchors="[00:34] Josh", anchor_window_before_s=45,
+        anchor_window_after_s=10,
+    )
+    assert "<speaker_anchors>\n[00:34] Josh\n</speaker_anchors>" in prompt
+    assert prompt.index("<attendees>") < prompt.index("<speaker_anchors>")
+    assert "45 seconds BEFORE through 10 seconds AFTER" in prompt
+    assert "Never extend an anchor forward through the meeting" in prompt
+    assert "UNASSIGNED" in prompt
+    assert "Never include someone merely because they appear on the attendee roster" in prompt
+    assert "<speaker_anchors>\n" not in build_prompt("hello")
 
 
 def test_timestamped_prompt_transcript_is_segment_granular_and_export_format_unchanged():

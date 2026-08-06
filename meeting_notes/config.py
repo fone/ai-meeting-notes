@@ -42,6 +42,11 @@ class AppConfig:
     meeting_terms: list[str] = field(default_factory=list)
     attendee_name_index: list[str] = field(default_factory=list)
 
+    # Speaker anchors are typed after speech, so attribution is intentionally
+    # asymmetric. Kept configurable for tuning against real meetings.
+    speaker_anchor_window_before_s: int = 45
+    speaker_anchor_window_after_s: int = 10
+
     # Other settings
     # "turbo" uses faster-whisper's distilled large-v3 model. It is the
     # production default because base Whisper loses accuracy and can loop on

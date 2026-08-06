@@ -527,6 +527,35 @@ async def test_edit_and_delete_latest_entry_rewrite_ledger_atomically(tmp_path, 
         app.exit()
 
 @pytest.mark.asyncio
+async def test_speaker_roster_completion_and_off_roster_offer(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.chdir(tmp_path)
+    app = MeetingNotesApp()
+    audio_path = tmp_path / "recordings" / "anchors.wav"
+    app.is_recording = True
+    app._active_recording_path = audio_path
+    start_note_ledger(audio_path)
+    async with app.run_test() as pilot:
+        await app.mount(RecordingView())
+        view = app.query_one(RecordingView)
+        attendees = view.query_one("#meeting-attendees-input", Input)
+        attendees.value = "Pete Jones, Russell"
+        composer = view.query_one("#user-notes-input", TextArea)
+        composer.text = "@Pe"
+        view._update_speaker_completion()
+        assert "Pete Jones" in str(view.query_one("#speaker-completion", Static).render())
+        assert view.complete_speaker()
+        assert composer.text == "@Pete Jones "
+        composer.text = "@LateJoiner gave an update"
+        assert view.commit_composer()
+        assert view.entries[-1].speaker == "LateJoiner"
+        assert view.query_one("#speaker-roster-offer").display
+        assert "@LateJoiner" in str(view.query_one("#note-entry-log-content", Static).render())
+        view._add_off_roster_speaker()
+        assert "LateJoiner" in attendees.value
+        app.exit()
+
+@pytest.mark.asyncio
 async def test_escape_leaves_live_notes_and_e_reopens_context(tmp_path, monkeypatch):
     """Esc must reach the app even when TextArea has consumed normal key events."""
     monkeypatch.setenv("HOME", str(tmp_path))

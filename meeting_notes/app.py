@@ -7,6 +7,7 @@ import math
 import subprocess
 import os
 import multiprocessing.resource_tracker
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from datetime import datetime, timedelta
@@ -39,7 +40,7 @@ from meeting_notes.recording_notes import (
 )
 from meeting_notes.live_notes import bare_marker, format_note_entries, format_offset, parse_note_entry
 from meeting_notes.audio_test_screen import AudioTestScreen
-from meeting_notes.meeting_context import MeetingContext, merge_name_index
+from meeting_notes.meeting_context import MeetingContext, merge_name_index, split_csv
 
 # Initialize logging
 setup_logging(debug=False)
@@ -135,6 +136,10 @@ class NoteComposer(TextArea):
 
     def on_key(self, event) -> None:
         view = self.app.query_one(RecordingView)
+        if event.key == "tab" and view.complete_speaker():
+            event.prevent_default()
+            event.stop()
+            return
         if event.key == "shift+enter":
             self.insert("\n")
             event.prevent_default()
@@ -214,6 +219,7 @@ class RecordingView(Container):
         self.attendee_names = attendee_names or []
         self.entries: list[NoteEntry] = []
         self.editing_seq: int | None = None
+        self.off_roster_speaker: str | None = None
 
     def compose(self) -> ComposeResult:
         with Vertical(id="recording-container"):
@@ -242,13 +248,17 @@ class RecordingView(Container):
                     yield Input(placeholder="Proper nouns ASR gets wrong — FileBound, QRadar, CDG…", id="meeting-terms-input")
             yield Static("", id="recording-context-summary")
             with Vertical(id="recording-notes-region"):
-                yield Static("Notes · Enter commit · Shift+Enter newline · m marker · [ ] action · ? question · #tag · [MM:SS] marker", id="notes-label")
+                yield Static("Notes · Enter commit · Shift+Enter newline · m marker · [ ] action · ? question · #tag · @speaker · [MM:SS] marker", id="notes-label")
                 with ScrollableContainer(id="note-entry-log"):
                     yield Static("[dim]Committed notes appear here.[/dim]", id="note-entry-log-content")
                 with Horizontal(id="note-entry-actions"):
                     yield Button("Edit latest", id="note-edit-latest", classes="note-entry-action")
                     yield Button("Delete latest", id="note-delete-latest", classes="note-entry-action danger")
                 yield NoteComposer(id="user-notes-input")
+                yield Static("", id="speaker-completion")
+                with Horizontal(id="speaker-roster-offer"):
+                    yield Static("", id="speaker-roster-offer-text")
+                    yield Button("Add to attendees", id="add-speaker-to-roster")
             yield ActionBar()
 
     def watch_elapsed_time(self, elapsed: int) -> None:
@@ -351,7 +361,8 @@ class RecordingView(Container):
         try:
             glyphs = {"note": "•", "action": "[ ]", "question": "?", "marker": "◆"}
             content = "\n".join(
-                f"[dim][{format_offset(entry.offset_s)}][/dim] {glyphs[entry.kind]} {entry.text}".rstrip()
+                f"[dim][{format_offset(entry.offset_s)}][/dim] {glyphs[entry.kind]} "
+                f"{('[bold cyan]@' + entry.speaker + '[/bold cyan] ') if entry.speaker else ''}{entry.text}".rstrip()
                 for entry in self.entries
             ) or "[dim]Committed notes appear here.[/dim]"
             self.query_one("#note-entry-log-content", Static).update(content)
@@ -375,7 +386,8 @@ class RecordingView(Container):
     @staticmethod
     def _entry_draft(entry: NoteEntry) -> str:
         prefix = {"note": "", "action": "[ ] ", "question": "? ", "marker": ""}[entry.kind]
-        return f"[{format_offset(entry.offset_s)}] {prefix}{entry.text}".rstrip()
+        speaker = f" @{entry.speaker}" if entry.speaker else ""
+        return f"[{format_offset(entry.offset_s)}] {prefix}{speaker} {entry.text}".strip()
 
     def edit_latest_entry(self) -> bool:
         if not self.entries:
@@ -406,6 +418,9 @@ class RecordingView(Container):
         elif event.button.id == "note-delete-latest":
             self.delete_latest_entry()
             event.stop()
+        elif event.button.id == "add-speaker-to-roster":
+            self._add_off_roster_speaker()
+            event.stop()
 
     def commit_composer(self) -> bool:
         composer = self.query_one("#user-notes-input", TextArea)
@@ -416,6 +431,7 @@ class RecordingView(Container):
             composer.text,
             offset_s=original.offset_s if original else self.app.current_recording_offset(),
             seq=original.seq if original else len(self.entries) + 1,
+            roster=split_csv(self.query_one("#meeting-attendees-input", Input).value),
         )
         if original:
             revised = [entry if existing.seq == original.seq else existing for existing in self.entries]
@@ -424,9 +440,11 @@ class RecordingView(Container):
             self.entries = revised
             self.editing_seq = None
             self._render_entry_log()
+            self._offer_roster_addition(entry.speaker)
             composer.text = ""
             return True
         if self._commit_entry(entry):
+            self._offer_roster_addition(entry.speaker)
             composer.text = ""
             return True
         return False
@@ -436,9 +454,55 @@ class RecordingView(Container):
             bare_marker(offset_s=self.app.current_recording_offset(), seq=len(self.entries) + 1)
         )
 
+    def _roster_names(self) -> list[str]:
+        return split_csv(self.query_one("#meeting-attendees-input", Input).value)
+
+    def _update_speaker_completion(self) -> None:
+        composer = self.query_one("#user-notes-input", TextArea)
+        match = re.search(r"@([A-Za-z][\w'-]*)?$", composer.text)
+        hint = self.query_one("#speaker-completion", Static)
+        if not match:
+            hint.update("")
+            return
+        needle = (match.group(1) or "").casefold()
+        matches = [name for name in self._roster_names() if name.casefold().startswith(needle)]
+        hint.update(f"[cyan]@speaker:[/cyan] {', '.join(matches[:4])}  [dim]Tab completes[/dim]" if matches else "")
+
+    def complete_speaker(self) -> bool:
+        composer = self.query_one("#user-notes-input", TextArea)
+        match = re.search(r"@([A-Za-z][\w'-]*)?$", composer.text)
+        if not match:
+            return False
+        needle = (match.group(1) or "").casefold()
+        name = next((person for person in self._roster_names() if person.casefold().startswith(needle)), None)
+        if not name:
+            return False
+        composer.text = composer.text[:match.start()] + f"@{name} "
+        composer.move_cursor((len(composer.text.splitlines()) - 1, len(composer.text.splitlines()[-1])))
+        self._update_speaker_completion()
+        return True
+
+    def _offer_roster_addition(self, speaker: str | None) -> None:
+        if not speaker or any(name.casefold() == speaker.casefold() for name in self._roster_names()):
+            return
+        self.off_roster_speaker = speaker
+        self.query_one("#speaker-roster-offer-text", Static).update(
+            f"[yellow]@{speaker} is not in attendees.[/yellow]"
+        )
+        self.query_one("#speaker-roster-offer", Horizontal).display = True
+
+    def _add_off_roster_speaker(self) -> None:
+        if not self.off_roster_speaker:
+            return
+        attendees = self.query_one("#meeting-attendees-input", Input)
+        attendees.value = f"{attendees.value}, {self.off_roster_speaker}".strip(", ")
+        self.off_roster_speaker = None
+        self.query_one("#speaker-roster-offer", Horizontal).display = False
+
     def on_text_area_changed(self, event: TextArea.Changed) -> None:
-        # Enter is the durability boundary. Shift+Enter only composes text.
-        return
+        if event.text_area.id == "user-notes-input":
+            self._update_speaker_completion()
+
 
     def on_input_changed(self, event: Input.Changed) -> None:
         if event.input.id in {"meeting-title-input", "meeting-attendees-input", "meeting-terms-input"}:
@@ -1127,6 +1191,20 @@ class MeetingNotesApp(App):
 
     .note-entry-action.danger { color: $error; }
 
+    #speaker-completion {
+        height: 1;
+        width: 100%;
+    }
+
+    #speaker-roster-offer {
+        display: none;
+        height: 2;
+        width: 100%;
+        align: left middle;
+    }
+
+    #speaker-roster-offer-text { width: 1fr; }
+
     #user-notes-input {
         width: 100%;
         height: 3;
@@ -1263,6 +1341,8 @@ class MeetingNotesApp(App):
             api_key=api_key,
             api_base_url=self.config.custom_base_url,
             provider_name=self.config.custom_provider_name,
+            speaker_anchor_window_before_s=self.config.speaker_anchor_window_before_s,
+            speaker_anchor_window_after_s=self.config.speaker_anchor_window_after_s,
         )
         self.notes_dir = Path(self.config.notes_dir).expanduser()
         self.notes_dir.mkdir(parents=True, exist_ok=True)

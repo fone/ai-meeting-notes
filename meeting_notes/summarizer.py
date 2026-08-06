@@ -57,7 +57,12 @@ class OllamaSummarizer:
 
     def _build_prompt(self, transcript: str, user_notes: str = "", attendees: str = "", glossary: str = "") -> str:
         """Build the shared version 2 prompt used by local Ollama too."""
-        return build_prompt(transcript, user_notes=user_notes, attendees=attendees, glossary=glossary)
+        return build_prompt(
+            transcript, user_notes=user_notes, attendees=attendees, glossary=glossary,
+            speaker_anchors=getattr(self, "speaker_anchors", ""),
+            anchor_window_before_s=getattr(self, "anchor_window_before_s", 45),
+            anchor_window_after_s=getattr(self, "anchor_window_after_s", 10),
+        )
 
     def _legacy_build_prompt(self, transcript: str, user_notes: str = "") -> str:
         """Historical v1 prompt retained during migration."""

@@ -16,6 +16,7 @@ _LEADING_ABSOLUTE = re.compile(r"^\[(\d{1,2}:\d{2}(?::\d{2})?)\]")
 _LEADING_RELATIVE = re.compile(r"^\[-(\d+)([ms]?)\]")
 _LEADING_ACTION = re.compile(r"^(?:[-*]\s*)?\[\s?\]")
 _LEADING_QUESTION = re.compile(r"^\?")
+_LEADING_SPEAKER = re.compile(r"^@([A-Za-z][\w'-]*)")
 
 
 @dataclass(frozen=True)
@@ -55,11 +56,28 @@ def format_offset(seconds: float) -> str:
     return f"{hours:02d}:{minutes:02d}:{secs:02d}" if hours else f"{minutes:02d}:{secs:02d}"
 
 
-def parse_note_entry(text: str, *, offset_s: float, seq: int) -> NoteEntry:
+def _leading_speaker(token: str, roster: list[str]) -> tuple[str, int] | None:
+    """Resolve a leading @speaker, preferring exact roster spellings."""
+    for name in sorted(roster, key=len, reverse=True):
+        candidate = f"@{name}"
+        if token.casefold().startswith(candidate.casefold()) and (
+            len(token) == len(candidate) or token[len(candidate)].isspace()
+        ):
+            return name, len(candidate)
+    if match := _LEADING_SPEAKER.match(token):
+        return match.group(1), match.end()
+    return None
+
+
+def parse_note_entry(
+    text: str, *, offset_s: float, seq: int, roster: list[str] | None = None
+) -> NoteEntry:
     """Parse optional leading shorthand once, at the instant an entry is committed."""
     remaining = text.strip()
     kind = "note"
+    speaker: str | None = None
     resolved_offset = max(0.0, offset_s)
+    roster = roster or []
     while remaining:
         token = remaining.lstrip()
         if match := _LEADING_ABSOLUTE.match(token):
@@ -80,12 +98,16 @@ def parse_note_entry(text: str, *, offset_s: float, seq: int) -> NoteEntry:
             kind = "question"
             remaining = token[match.end():]
             continue
+        if speaker_token := _leading_speaker(token, roster):
+            speaker, consumed = speaker_token
+            remaining = token[consumed:]
+            continue
         break
     body = remaining.strip()
     tags = _unique([tag.lower() for tag in _TAG.findall(body)])
     if not body and kind == "note":
         kind = "marker"
-    return NoteEntry(seq=seq, offset_s=resolved_offset, kind=kind, speaker=None, text=body, tags=tags)
+    return NoteEntry(seq=seq, offset_s=resolved_offset, kind=kind, speaker=speaker, text=body, tags=tags)
 
 
 def bare_marker(*, offset_s: float, seq: int) -> NoteEntry:
@@ -138,6 +160,18 @@ def format_live_notes(notes: LiveNotes) -> str:
     return "## Live Notes\n\n" + "\n\n".join(sections) if sections else ""
 
 
+def speaker_anchors(entries: list[NoteEntry]) -> list[tuple[float, str]]:
+    """Return durable (offset, roster-spelled name) pairs for attribution."""
+    return sorted(
+        [(entry.offset_s, entry.speaker) for entry in entries if entry.speaker],
+        key=lambda anchor: anchor[0],
+    )
+
+
+def format_speaker_anchors(entries: list[NoteEntry]) -> str:
+    return "\n".join(f"[{format_offset(offset)}] {name}" for offset, name in speaker_anchors(entries))
+
+
 def entries_tags(entries: list[NoteEntry]) -> list[str]:
     return _unique([tag for entry in entries for tag in entry.tags])
 
@@ -150,7 +184,8 @@ def format_note_entries(entries: list[NoteEntry]) -> str:
     lines: list[str] = []
     for entry in entries:
         prefix = f"- **[{format_offset(entry.offset_s)}]** {glyphs[entry.kind]}"
-        lines.append(f"{prefix} {entry.text}".rstrip())
+        speaker = f" @{entry.speaker}" if entry.speaker else ""
+        lines.append(f"{prefix}{speaker} {entry.text}".rstrip())
     return "## Live Notes\n\n" + "\n".join(lines)
 
 

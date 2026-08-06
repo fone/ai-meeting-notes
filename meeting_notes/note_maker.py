@@ -10,7 +10,10 @@ import re
 from .meeting_context import split_csv
 
 from .logger import get_logger
-from .live_notes import entries_for_prompt, entries_tags, format_live_notes, format_note_entries, parse_live_notes
+from .live_notes import (
+    entries_for_prompt, entries_tags, format_live_notes, format_note_entries,
+    format_speaker_anchors, parse_live_notes,
+)
 from .recording_notes import NoteEntry
 
 logger = get_logger(__name__)
@@ -42,6 +45,8 @@ class NoteMaker:
         api_key: Optional[str] = None,
         api_base_url: Optional[str] = None,
         provider_name: Optional[str] = None,
+        speaker_anchor_window_before_s: int = 45,
+        speaker_anchor_window_after_s: int = 10,
     ):
         """
         Initialize note maker.
@@ -59,6 +64,8 @@ class NoteMaker:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.transcripts_dir.mkdir(parents=True, exist_ok=True)
         self.ai_provider = ai_provider
+        self.speaker_anchor_window_before_s = speaker_anchor_window_before_s
+        self.speaker_anchor_window_after_s = speaker_anchor_window_after_s
         self.summarizer: Optional[Any] = None
 
         if ai_provider in ["openai", "anthropic", "openrouter", "ollama_cloud", "custom_openai_compatible"]:
@@ -166,6 +173,11 @@ class NoteMaker:
                 else:
                     logger.info("Generating AI summary with local Ollama")
 
+                # All active adapters build their prompt through BaseSummarizer.
+                # Keep this invocation-local context out of transcript prose.
+                self.summarizer.speaker_anchors = format_speaker_anchors(entries or [])
+                self.summarizer.anchor_window_before_s = self.speaker_anchor_window_before_s
+                self.summarizer.anchor_window_after_s = self.speaker_anchor_window_after_s
                 try:
                     ai_summary = self.summarizer.summarize(
                         prompt_transcript or transcript_text,
