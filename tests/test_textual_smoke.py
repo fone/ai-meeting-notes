@@ -483,6 +483,30 @@ async def test_escape_leaves_live_notes_and_e_reopens_context(tmp_path, monkeypa
 
 
 @pytest.mark.asyncio
+async def test_processing_banner_persists_phase_and_hides_after_completion(tmp_path, monkeypatch):
+    """The main screen must show durable processing state beyond a toast."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.chdir(tmp_path)
+
+    app = MeetingNotesApp()
+    async with app.run_test() as pilot:
+        banner = app.query_one("#processing-banner")
+        status = app.query_one("#processing-status", Static)
+        assert not banner.display
+
+        app._set_processing_status("Transcribing audio…", "Daily Stand-Up")
+        await pilot.pause()
+        assert banner.display
+        assert "Daily Stand-Up" in str(status.render())
+        assert "Transcribing audio" in str(status.render())
+
+        app._clear_processing_status()
+        await pilot.pause()
+        assert not banner.display
+        app.exit()
+
+
+@pytest.mark.asyncio
 async def test_settings_screen_opens(tmp_path, monkeypatch):
     """Pressing ',' should open the settings screen without error."""
     monkeypatch.setenv("HOME", str(tmp_path))

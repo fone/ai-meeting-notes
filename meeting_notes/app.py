@@ -14,7 +14,7 @@ from typing import Optional
 
 from textual.app import App, ComposeResult
 from textual.containers import Container, Vertical, Horizontal, ScrollableContainer
-from textual.widgets import Static, Label, ListView, ListItem, Footer, Input, Button, TextArea
+from textual.widgets import Static, Label, ListView, ListItem, Footer, Input, Button, TextArea, LoadingIndicator
 from textual.binding import Binding
 from textual.reactive import reactive
 from textual.screen import Screen, ModalScreen
@@ -792,6 +792,29 @@ class MeetingNotesApp(App):
         layout: horizontal;
         height: 1fr;
     }
+
+    #processing-banner {
+        display: none;
+        height: 3;
+        width: 100%;
+        border: solid $primary;
+        background: $panel;
+        padding: 0 1;
+    }
+
+    #processing-spinner {
+        width: 3;
+        height: 1;
+        margin-top: 1;
+        color: $primary;
+    }
+
+    #processing-status {
+        width: 1fr;
+        height: 1;
+        margin-top: 1;
+        text-style: bold;
+    }
     
     #meetings-panel {
         width: 35%;
@@ -1185,6 +1208,12 @@ class MeetingNotesApp(App):
 
     def compose(self) -> ComposeResult:
         """Build the UI."""
+        # This remains visible while the background worker transcribes and
+        # summarizes. It is deliberately phase-based, not a fake percentage.
+        with Horizontal(id="processing-banner"):
+            yield LoadingIndicator(id="processing-spinner")
+            yield Static("", id="processing-status")
+
         # Main content area
         with Container(id="main-panels"):
             # Meetings list panel
@@ -1354,6 +1383,24 @@ class MeetingNotesApp(App):
         except Exception as e:
             logger.warning(f"Failed to write status file: {e}")
     
+    def _set_processing_status(self, stage: str, title: str = "") -> None:
+        """Show a durable, phase-accurate status while a note is being made."""
+        try:
+            banner = self.query_one("#processing-banner", Horizontal)
+            message = self.query_one("#processing-status", Static)
+            banner.display = True
+            subject = f' “{title}”' if title else ""
+            message.update(f"Processing{subject} · {stage}")
+        except Exception as exc:
+            logger.debug("Could not render processing status: %s", exc)
+
+    def _clear_processing_status(self) -> None:
+        """Hide the durable processing state only after success or failure."""
+        try:
+            self.query_one("#processing-banner", Horizontal).display = False
+        except Exception as exc:
+            logger.debug("Could not clear processing status: %s", exc)
+
     def check_action(self, action: str, parameters: tuple) -> bool | None:
         """Control which actions are available based on recording state."""
         active_recording_ui = self.is_recording or self.is_preflighting
@@ -2111,7 +2158,9 @@ class MeetingNotesApp(App):
                 # Update footer bindings
                 self.refresh_bindings()
                 
-                # Process in background
+                # Process in background. The main screen stays usable, but its
+                # phase banner remains visible until the worker finishes.
+                self._set_processing_status("Loading transcription model…", meeting_title or "")
                 self.notify("Processing recording...", severity="information")
                 self.process_recording(
                     audio_path, meeting_title, user_notes, recording_started_at, attendees, glossary
@@ -2137,16 +2186,27 @@ class MeetingNotesApp(App):
         try:
             # Load Whisper model (if not already loaded)
             logger.info("Loading Whisper model")
+            self.call_from_thread(
+                self._set_processing_status, "Loading transcription model…", meeting_title or ""
+            )
             self.call_from_thread(self.notify, f"Loading Whisper {self.config.whisper_model} model...", severity="information")
             self.transcriber.load_model()
             
             # Transcribe
             logger.info("Starting transcription")
+            self.call_from_thread(
+                self._set_processing_status, "Transcribing audio…", meeting_title or ""
+            )
             self.call_from_thread(self.notify, "Transcribing audio (this may take a few minutes)...", severity="information")
             result = self.transcriber.transcribe(audio_path)
             
             word_count = len(result.text.split())
             logger.info(f"Transcription complete: {word_count} words")
+            self.call_from_thread(
+                self._set_processing_status,
+                f"Generating AI summary from {word_count:,} words…",
+                meeting_title or "",
+            )
             self.call_from_thread(self.notify, f"✓ Transcribed {word_count} words. Generating AI summary...", severity="information")
             
             # Format transcript
@@ -2178,12 +2238,14 @@ class MeetingNotesApp(App):
                 logger.info(f"Transcript saved: {transcript_path}")
                 self.call_from_thread(self.notify, f"✓ Note created: {Path(note_path).name}", severity="information")
             self.call_from_thread(self.load_meetings)
+            self.call_from_thread(self._clear_processing_status)
             
             # Clear status back to idle after successful processing
             self._write_status_file("idle")
             
         except Exception as e:
             logger.error(f"Error processing recording: {e}", exc_info=True)
+            self.call_from_thread(self._clear_processing_status)
             self.call_from_thread(self.notify, f"Error processing: {e}", severity="error")
             
             # Clear status back to idle after error
