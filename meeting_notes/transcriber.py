@@ -180,11 +180,23 @@ class WhisperTranscriber:
                 beam_size=5,
                 temperature=0,
             )
-            segments = [
-                TranscriptSegment(start=seg.start, end=seg.end, text=seg.text.strip())
-                for seg in segments_iter
-                if seg.text.strip()
-            ]
+            segments = []
+            total_duration = float(getattr(info, "duration", 0) or 0)
+            last_reported = -1
+            for seg in segments_iter:
+                text_value = seg.text.strip()
+                if text_value:
+                    segments.append(
+                        TranscriptSegment(start=seg.start, end=seg.end, text=text_value)
+                    )
+                if progress_callback and total_duration > 0:
+                    progress = min(100.0, (seg.end / total_duration) * 100)
+                    rounded = int(progress)
+                    if rounded != last_reported:
+                        progress_callback(progress)
+                        last_reported = rounded
+            if progress_callback and last_reported != 100:
+                progress_callback(100.0)
             language = info.language or "unknown"
             text = " ".join(seg.text for seg in segments).strip()
         else:

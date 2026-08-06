@@ -152,8 +152,11 @@ def test_turbo_uses_faster_whisper_vad_and_unconditioned_segments(monkeypatch, t
 
         def transcribe(self, path, **kwargs):
             calls.append((path, kwargs))
-            segments = [types.SimpleNamespace(start=1.0, end=2.0, text=" Team update ")]
-            return iter(segments), types.SimpleNamespace(language="en")
+            segments = [
+                types.SimpleNamespace(start=1.0, end=2.0, text=" Team update "),
+                types.SimpleNamespace(start=2.0, end=10.0, text=" Next step "),
+            ]
+            return iter(segments), types.SimpleNamespace(language="en", duration=10.0)
 
     monkeypatch.setitem(
         sys.modules,
@@ -164,12 +167,16 @@ def test_turbo_uses_faster_whisper_vad_and_unconditioned_segments(monkeypatch, t
     audio = tmp_path / "fake.wav"
     audio.write_bytes(b"\x00\x00")
 
-    result = transcriber_mod.WhisperTranscriber("turbo", device="cpu").transcribe(str(audio))
+    progress = []
+    result = transcriber_mod.WhisperTranscriber("turbo", device="cpu").transcribe(
+        str(audio), progress_callback=progress.append
+    )
 
     assert calls[0] == (("turbo",), {"device": "cpu", "compute_type": "int8", "cpu_threads": 8})
     assert calls[1][1]["vad_filter"] is True
     assert calls[1][1]["condition_on_previous_text"] is False
-    assert result.text == "Team update"
+    assert result.text == "Team update Next step"
+    assert progress == [20.0, 100.0]
 
 
 def test_unknown_device_string_falls_back_to_cpu(fake_whisper, monkeypatch):

@@ -31,7 +31,7 @@ from meeting_notes.app import (  # noqa: E402  (deliberate import-after-skip)
     RecordingView,
 )
 from meeting_notes.config import AppConfig, load_config  # noqa: E402
-from textual.widgets import Button, Footer, Input, Static, TextArea  # noqa: E402
+from textual.widgets import Button, Footer, Input, ProgressBar, Static, TextArea  # noqa: E402
 
 
 @pytest.mark.asyncio
@@ -492,6 +492,7 @@ async def test_processing_banner_persists_phase_and_hides_after_completion(tmp_p
     async with app.run_test() as pilot:
         banner = app.query_one("#processing-banner")
         status = app.query_one("#processing-status", Static)
+        progress = app.query_one("#processing-progress", ProgressBar)
         assert not banner.display
 
         app._set_processing_status("Transcribing audio…", "Daily Stand-Up")
@@ -499,6 +500,12 @@ async def test_processing_banner_persists_phase_and_hides_after_completion(tmp_p
         assert banner.display
         assert "Daily Stand-Up" in str(status.render())
         assert "Transcribing audio" in str(status.render())
+        assert progress.progress == 0
+
+        app._update_transcription_progress(42.5, "Daily Stand-Up")
+        await pilot.pause()
+        assert progress.progress == 42.5
+        assert "42%" in str(status.render())
 
         app._clear_processing_status()
         await pilot.pause()
