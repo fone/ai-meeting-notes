@@ -1023,6 +1023,10 @@ class MeetingNotesApp(App):
     """
     
     BINDINGS = [
+        # TextArea/Input widgets consume Escape before RecordingView.on_key can
+        # see it. This app-priority binding is the canonical way back to the
+        # recording command surface during a live capture.
+        Binding("escape", "blur_recording_context", "Leave editor", show=False, priority=True),
         Binding("r", "start_recording", "Record", show=True),
         Binding("s", "stop_recording", "Stop", show=False, priority=True),
         Binding("x", "request_discard", "Discard", show=False, priority=True),
@@ -1034,7 +1038,7 @@ class MeetingNotesApp(App):
         Binding("P", "copy_path", "Copy Path", show=True),
         Binding("f", "show_in_folder", "Show in Folder", show=True),
         Binding("d", "delete_meeting", "Delete", show=True),
-        Binding("e", "edit_title", "Edit Title", show=True),
+        Binding("e", "edit_context", "Edit", show=True, priority=True),
         Binding("t", "view_transcript", "Transcript", show=True),
         Binding("T", "manage_tags", "Tags", show=True),
         Binding("comma", "open_settings", "Settings", show=True),
@@ -1681,6 +1685,30 @@ class MeetingNotesApp(App):
                 except Exception as exc:
                     logger.debug(f"level-meter: error stopping {attr}: {exc}")
                 setattr(self, attr, None)
+
+    def action_edit_context(self) -> None:
+        """Open typed context while recording, otherwise edit the selected note title."""
+        try:
+            view = self.query_one(RecordingView)
+        except Exception:
+            self.action_edit_title()
+            return
+        if view.state in {"recording", "paused"}:
+            view.add_class("context-editing")
+            view.query_one("#meeting-title-input", Input).focus()
+
+    def action_blur_recording_context(self) -> None:
+        """Leave a focused recording editor without changing capture state."""
+        try:
+            view = self.query_one(RecordingView)
+        except Exception:
+            return
+        if view.state == "confirming_discard":
+            view.cancel_discard()
+            return
+        if view._has_focused_input():
+            view.remove_class("context-editing")
+            self.screen.set_focus(None)
 
     async def action_start_recording(self) -> None:
         """Open preflight diagnostics without creating a recording artifact."""

@@ -456,6 +456,33 @@ async def test_recording_notes_persist_to_sidecar_while_typing(tmp_path, monkeyp
         app.exit()
 
 @pytest.mark.asyncio
+async def test_escape_leaves_live_notes_and_e_reopens_context(tmp_path, monkeypatch):
+    """Esc must reach the app even when TextArea has consumed normal key events."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.chdir(tmp_path)
+
+    app = MeetingNotesApp()
+    async with app.run_test() as pilot:
+        await app.mount(RecordingView())
+        view = app.query_one(RecordingView)
+        view.state = "recording"
+        notes = view.query_one("#user-notes-input", TextArea)
+        notes.focus()
+        await pilot.pause()
+
+        await pilot.press("escape")
+        await pilot.pause()
+        assert app.focused is None
+        assert not view.has_class("context-editing")
+
+        await pilot.press("e")
+        await pilot.pause()
+        assert view.has_class("context-editing")
+        assert view.query_one("#meeting-title-input", Input).has_focus
+        app.exit()
+
+
+@pytest.mark.asyncio
 async def test_settings_screen_opens(tmp_path, monkeypatch):
     """Pressing ',' should open the settings screen without error."""
     monkeypatch.setenv("HOME", str(tmp_path))
