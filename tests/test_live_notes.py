@@ -39,5 +39,12 @@ def test_format_live_notes_uses_only_populated_sections():
     assert "### Notes" not in rendered
 
 
+def test_format_live_notes_puts_freeform_text_directly_under_parent_heading():
+    rendered = format_live_notes(parse_live_notes("My actual meeting note\n- [ ] Follow up"))
+
+    assert "## Live Notes\n\nMy actual meeting note\n\n### Action Items" in rendered
+    assert "### Notes" not in rendered
+
+
 def test_empty_live_notes_render_nothing():
     assert format_live_notes(parse_live_notes("  \n")) == ""

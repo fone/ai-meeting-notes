@@ -69,6 +69,10 @@ def parse_live_notes(text: str) -> LiveNotes:
 def format_live_notes(notes: LiveNotes) -> str:
     """Render populated structured-note sections as Obsidian-flavored Markdown."""
     sections: list[str] = []
+    # Freeform text is the primary payload. Put it directly below the parent
+    # heading; a nested "Notes" heading only repeated what "Live Notes" says.
+    if notes.notes:
+        sections.append(notes.notes)
     if notes.action_items:
         sections.append("### Action Items\n\n" + "\n".join(f"- [ ] {item}" for item in notes.action_items))
     if notes.questions:
@@ -76,6 +80,4 @@ def format_live_notes(notes: LiveNotes) -> str:
     if notes.markers:
         markers = "\n".join(f"- **[{stamp}]** {text}".rstrip() for stamp, text in notes.markers)
         sections.append("### Markers\n\n" + markers)
-    if notes.notes:
-        sections.append("### Notes\n\n" + notes.notes)
     return "## Live Notes\n\n" + "\n\n".join(sections) if sections else ""
