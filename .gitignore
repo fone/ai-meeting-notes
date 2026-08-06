@@ -51,3 +51,7 @@ logs/
 # OS
 .DS_Store
 Thumbs.db
+
+# Hermes agent internals
+.hermes/
+ai-meeting-notes/
