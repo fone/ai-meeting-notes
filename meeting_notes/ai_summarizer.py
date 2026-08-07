@@ -498,13 +498,19 @@ class OllamaCloudSummarizer(BaseSummarizer):
     # Default model for meeting summarization
     DEFAULT_MODEL = "kimi-k2.6"
     API_BASE = "https://ollama.com/v1"
-    # Kimi emits hidden reasoning before visible content. Short calls regularly
-    # fit in 8192; long recordings do not, and a second identical retry is waste.
-    MAX_OUTPUT_TOKENS = 8192
+    # Kimi emits hidden reasoning before visible content. 8192 was
+    # insufficient even for modest meetings; 12288 covers most
+    # recordings. 16384 is reserved for very long transcripts.
+    MAX_OUTPUT_TOKENS = 12288
     LONG_TRANSCRIPT_OUTPUT_TOKENS = 16384
     LONG_TRANSCRIPT_WORDS = 6000
 
-    def _output_budget(self, transcript: str) -> int:
+    def _output_budget(self, transcript: str, attempt: int = 0) -> int:
+        """Return token budget. Retry attempt 1 always escalates to the
+        largest available budget so a first-run exhaustion does not
+        repeat identically."""
+        if attempt > 0:
+            return self.LONG_TRANSCRIPT_OUTPUT_TOKENS
         return (
             self.LONG_TRANSCRIPT_OUTPUT_TOKENS
             if len(transcript.split()) > self.LONG_TRANSCRIPT_WORDS
@@ -541,7 +547,7 @@ class OllamaCloudSummarizer(BaseSummarizer):
                     model=self.model,
                     messages=[{"role": "user", "content": self._build_prompt(transcript, user_notes=user_notes, attendees=attendees, glossary=glossary)}],
                     temperature=0.3,
-                    max_tokens=self._output_budget(transcript),
+                    max_tokens=self._output_budget(transcript, attempt=attempt),
                 )
 
                 # Calculate cost (Ollama Cloud pricing varies)

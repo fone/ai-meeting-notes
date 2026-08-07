@@ -47,7 +47,7 @@ Adam
     monkeypatch.setitem(sys.modules, "openai", SimpleNamespace(OpenAI=FakeOpenAI))
     summary = OllamaCloudSummarizer(api_key="test-key").summarize("meeting text")
 
-    assert calls[0]["max_tokens"] == 8192
+    assert calls[0]["max_tokens"] == 12288
     assert summary.title == "Infrastructure Update"
     assert summary.overview == "The upgrade completed."
 
@@ -70,8 +70,11 @@ def test_ollama_cloud_uses_extended_budget_for_long_transcript(monkeypatch):
 
 
 def test_ollama_cloud_rejects_empty_visible_content(monkeypatch):
+    calls = []
+
     class FakeCompletions:
         def create(self, **kwargs):
+            calls.append(kwargs)
             return _response(None, finish_reason="length")
 
     class FakeOpenAI:
@@ -83,3 +86,8 @@ def test_ollama_cloud_rejects_empty_visible_content(monkeypatch):
 
     with pytest.raises(RuntimeError, match=r"no visible summary content.*finish_reason=length"):
         OllamaCloudSummarizer(api_key="test-key").summarize("meeting text")
+
+    # Verify retry escalated from 12288 to 16384 tokens.
+    assert len(calls) == 2
+    assert calls[0]["max_tokens"] == 12288
+    assert calls[1]["max_tokens"] == 16384
