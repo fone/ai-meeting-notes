@@ -548,6 +548,7 @@ class OllamaCloudSummarizer(BaseSummarizer):
                     messages=[{"role": "user", "content": self._build_prompt(transcript, user_notes=user_notes, attendees=attendees, glossary=glossary)}],
                     temperature=0.3,
                     max_tokens=self._output_budget(transcript, attempt=attempt),
+                    extra_body={"thinking": False},
                 )
 
                 # Calculate cost (Ollama Cloud pricing varies)
