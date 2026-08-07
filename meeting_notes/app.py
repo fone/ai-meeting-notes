@@ -1156,6 +1156,12 @@ class MeetingNotesApp(App):
     RecordingView.context-editing #recording-title-strip { display: block; }
     RecordingView.context-editing #recording-context-summary { display: none; }
 
+    RecordingView.preflight #note-entry-actions,
+    RecordingView.preflight #user-notes-input,
+    RecordingView.preflight #speaker-completion,
+    RecordingView.preflight #speaker-roster-offer { display: none; }
+    RecordingView.preflight #note-entry-log { display: none; }
+
     #recording-notes-region {
         height: 1fr;
         padding: 0;
@@ -1184,7 +1190,7 @@ class MeetingNotesApp(App):
     }
 
     .note-entry-action {
-        height: 1;
+        height: 3;
         min-width: 14;
         margin-right: 1;
     }
