@@ -120,9 +120,17 @@ The settings screen supports:
 
 For local Ollama, install Ollama through its official installer, pull the model you want, start its service, then select it in Settings. The recorder and Turbo transcription do **not** depend on Ollama.
 
-### Long meetings and Kimi
+### Thinking models and output budget
 
-Kimi-based Ollama Cloud summaries use an 8,192-token output budget for normal meetings and automatically use 16,384 tokens for transcripts over 6,000 words. This avoids the failure mode where hidden reasoning consumes the whole output budget and returns an empty visible summary.
+Some providers ship reasoning models with hidden thinking enabled by default (e.g. kimi-k2.6 and minimax-m3 on Ollama Cloud). The model spends output tokens on internal reasoning chains and returns an empty visible summary with `finish_reason=length`.
+
+The app handles this in two ways:
+
+1. **Disable hidden reasoning.** For Ollama Cloud, the app passes `extra_body={"thinking": False}` so tokens go to visible content instead of internal reasoning. If you use OpenRouter, Anthropic, or DeepSeek directly, the parameter name differs (`include_reasoning`, `thinking` block, `reasoning`, respectively).
+
+2. **Validate non-empty responses.** Before accepting a summary, the app checks that the response actually contains visible content. Empty responses trigger an automatic retry with a larger token budget.
+
+For genuinely long meetings (transcripts over 6,000 words), the output budget is automatically raised from 8,192 to 16,384 tokens.
 
 ## During a meeting
 
@@ -188,7 +196,13 @@ Confirm internet access, then rerun setup to retry only the model initialization
 
 ### Summary says no overview or empty content
 
-That means the AI provider failed to return a usable visible response. Your WAV, transcript, and live-note sidecar are still preserved. Check the provider credential/model in Settings, then rerun the summary from the saved transcript rather than recording the meeting again.
+That usually means the AI provider returned an empty visible response. Two common causes:
+
+1. **Thinking model with hidden reasoning enabled.** Some models (kimi-k2.6, minimax-m3 on Ollama Cloud) consume the entire output budget on internal reasoning chains and return no visible content. The app disables this automatically for Ollama Cloud; if you use OpenRouter, Anthropic, or DeepSeek directly, you may need to set the provider-specific flag (`include_reasoning`, `thinking` block, or `reasoning`).
+
+2. **Transcript is extremely long.** The app raises the output budget automatically for transcripts over 6,000 words. If it still fails, the provider may be rate-limiting or rejecting the request.
+
+Your WAV, transcript, and live-note sidecar are still preserved. Check the provider credential and model in Settings, then rerun the summary from the saved transcript rather than recording the meeting again.
 
 ## Development
 
