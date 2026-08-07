@@ -323,7 +323,14 @@ class OpenAISummarizer(BaseSummarizer):
 
                 logger.info(f"✓ Summary generated ({input_tokens + output_tokens} tokens, ${cost:.4f})")
 
-                return self._parse_response(response.choices[0].message.content)
+                response_text = response.choices[0].message.content
+                if not isinstance(response_text, str) or not response_text.strip():
+                    finish_reason = getattr(response.choices[0], "finish_reason", "unknown")
+                    raise RuntimeError(
+                        f"OpenAI returned no visible summary content (finish_reason={finish_reason})."
+                    )
+
+                return self._parse_response(response_text)
 
             except Exception as e:
                 error_msg = f"Attempt {attempt + 1}/{max_retries} failed: {type(e).__name__}: {e}"
@@ -399,7 +406,15 @@ class AnthropicSummarizer(BaseSummarizer):
 
                 logger.info(f"✓ Summary generated ({input_tokens + output_tokens} tokens, ${cost:.4f})")
 
-                return self._parse_response(response.content[0].text)
+                content_blocks = response.content
+                text = next((getattr(b, "text", None) for b in content_blocks if getattr(b, "type", None) == "text"), None)  # type: ignore[arg-type]
+                if not text or not text.strip():
+                    stop_reason = getattr(response, "stop_reason", "unknown")
+                    raise RuntimeError(
+                        f"Anthropic returned no visible summary content (stop_reason={stop_reason})."
+                    )
+
+                return self._parse_response(text)
 
             except Exception as e:
                 error_msg = f"Attempt {attempt + 1}/{max_retries} failed: {type(e).__name__}: {e}"
@@ -616,6 +631,7 @@ class OpenAICompatibleSummarizer(BaseSummarizer):
                     messages=[{"role": "user", "content": self._build_prompt(transcript, user_notes=user_notes, attendees=attendees, glossary=glossary)}],
                     temperature=0.3,
                     max_tokens=4096,
+                    extra_body={"thinking": False},
                 )
                 usage = getattr(response, "usage", None)
                 if usage:
@@ -625,7 +641,13 @@ class OpenAICompatibleSummarizer(BaseSummarizer):
                     )
                 else:
                     logger.info("✓ Summary generated")
-                return self._parse_response(response.choices[0].message.content)
+                response_text = response.choices[0].message.content
+                if not isinstance(response_text, str) or not response_text.strip():
+                    finish_reason = getattr(response.choices[0], "finish_reason", "unknown")
+                    raise RuntimeError(
+                        f"{self.provider_name} returned no visible summary content (finish_reason={finish_reason})."
+                    )
+                return self._parse_response(response_text)
             except Exception as exc:  # noqa: BLE001
                 if attempt < max_retries - 1:
                     logger.warning(
