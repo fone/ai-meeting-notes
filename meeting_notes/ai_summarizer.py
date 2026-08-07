@@ -21,6 +21,7 @@ class MeetingSummary:
     participants: List[str]
     open_questions: List[str] = field(default_factory=list)
     title: Optional[str] = None
+    attendees: List[str] = field(default_factory=list)
 
 
 class BaseSummarizer:
@@ -29,12 +30,9 @@ class BaseSummarizer:
     def _build_prompt(
         self, transcript: str, user_notes: str = "", attendees: str = "", glossary: str = ""
     ) -> str:
-        """Build prompt v2 with optional discrete authoritative context blocks."""
+        """Build prompt v3 with optional discrete authoritative context blocks."""
         return build_prompt(
             transcript, user_notes=user_notes, attendees=attendees, glossary=glossary,
-            speaker_anchors=getattr(self, "speaker_anchors", ""),
-            anchor_window_before_s=getattr(self, "anchor_window_before_s", 45),
-            anchor_window_after_s=getattr(self, "anchor_window_after_s", 10),
         )
 
     def _legacy_build_prompt(self, transcript: str, user_notes: str = "") -> str:
@@ -177,7 +175,12 @@ NAMES MENTIONED:
                         sections[current_section] = '\n'.join(current_content).strip()
                     current_section = 'open_questions'
                     current_content = []
-                elif line.startswith('PEOPLE:') or line.startswith('NAMES MENTIONED:') or line.startswith('PARTICIPANTS:'):
+                elif line.startswith('ATTENDEES:'):
+                    if current_section:
+                        sections[current_section] = '\n'.join(current_content).strip()
+                    current_section = 'attendees'
+                    current_content = []
+                elif line.startswith('PEOPLE:') or line.startswith('NAMES MENTIONED:') or line.startswith('PARTICIPANTS:') or line.startswith('OWNERS:'):
                     if current_section:
                         sections[current_section] = '\n'.join(current_content).strip()
                     current_section = 'names_mentioned'
@@ -230,14 +233,20 @@ NAMES MENTIONED:
             if any('none identified' in question.lower() for question in open_questions):
                 open_questions = []
 
-            # This is intentionally a list of names mentioned, not an
-            # attendance roster. Keep the existing field name for backwards
-            # compatibility with provider adapters and note rendering.
+            # This is intentionally a list of people with ownership stake
+            # (action items or decisions), not an attendance roster.
             participants_text = sections.get('names_mentioned', 'Unable to identify')
             if 'unable to identify' not in participants_text.lower():
                 participants = [p.strip() for p in participants_text.split(',')]
             else:
                 participants = []
+
+            # Attendees is the verbatim typed roster.
+            attendees_text = sections.get('attendees', '')
+            if attendees_text and 'not recorded' not in attendees_text.lower():
+                attendees = [p.strip() for p in attendees_text.split(',')]
+            else:
+                attendees = []
 
             return MeetingSummary(
                 overview=overview,
@@ -247,6 +256,7 @@ NAMES MENTIONED:
                 open_questions=open_questions,
                 participants=participants,
                 title=title,
+                attendees=attendees,
             )
 
         except Exception as e:

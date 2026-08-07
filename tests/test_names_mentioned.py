@@ -5,9 +5,9 @@ from meeting_notes.summarizer import OllamaSummarizer
 def test_prompt_and_parser_support_people_with_attendee_fallback():
     summarizer = BaseSummarizer()
     prompt = summarizer._build_prompt("Pete will send the update.")
-    assert "PEOPLE:" in prompt
+    assert "OWNERS:" in prompt
     assert "no speaker labels" in prompt
-    assert "do not infer ownership from adjacency" in prompt
+    assert "infer ownership from" in prompt
 
     summary = summarizer._parse_response(
         """TITLE:
@@ -22,7 +22,7 @@ DECISIONS:
 None identified
 OPEN QUESTIONS:
 - Who owns this?
-PEOPLE:
+OWNERS:
 Pete, Adam
 """
     )
@@ -30,8 +30,11 @@ Pete, Adam
     assert summary.open_questions == ["Who owns this?"]
 
 
-def test_local_ollama_uses_prompt_v2_and_people_contract():
+def test_local_ollama_uses_prompt_v3_and_people_contract():
     prompt = OllamaSummarizer()._build_prompt("Pete will send the update.")
-    assert "PEOPLE:" in prompt
+    assert "OWNERS:" in prompt
     assert "<transcript>" in prompt
     assert "PARTICIPANTS:" not in prompt
+    assert "ATTENDEES:" in prompt
+    assert "ENRICHMENT" in prompt
+    assert "UNASSIGNED" in prompt

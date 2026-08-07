@@ -1347,8 +1347,6 @@ class MeetingNotesApp(App):
             api_key=api_key,
             api_base_url=self.config.custom_base_url,
             provider_name=self.config.custom_provider_name,
-            speaker_anchor_window_before_s=self.config.speaker_anchor_window_before_s,
-            speaker_anchor_window_after_s=self.config.speaker_anchor_window_after_s,
         )
         self.notes_dir = Path(self.config.notes_dir).expanduser()
         self.notes_dir.mkdir(parents=True, exist_ok=True)

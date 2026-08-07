@@ -134,19 +134,17 @@ def test_speaker_anchors_parse_in_any_leading_order_and_omit_mid_entry_mentions(
     assert format_speaker_anchors([off_roster, note, action]) == "[07:34] Pete Jones\n[08:12] Russell\n[10:12] Josh"
 
 
-def test_speaker_anchor_prompt_is_optional_asymmetric_and_prevents_over_extension():
+def test_speaker_anchor_prompt_is_replaced_by_v3_enrichment_and_attendees():
     prompt = build_prompt(
         "[00:20] I will patch it\n[22:10] I will own the migration",
-        attendees="Russell, Josh", speaker_anchors="[00:34] Josh", anchor_window_before_s=45,
-        anchor_window_after_s=10,
+        attendees="Russell, Josh",
     )
-    assert "<speaker_anchors>\n[00:34] Josh\n</speaker_anchors>" in prompt
-    assert prompt.index("<attendees>") < prompt.index("<speaker_anchors>")
-    assert "45 seconds BEFORE through 10 seconds AFTER" in prompt
-    assert "Never extend an anchor forward through the meeting" in prompt
+    assert "<speaker_anchors>" not in prompt
+    assert "<attendees>" in prompt
+    assert "ENRICHMENT" in prompt
     assert "UNASSIGNED" in prompt
-    assert "Never include someone merely because they appear on the attendee roster" in prompt
-    assert "<speaker_anchors>\n" not in build_prompt("hello")
+    assert "ATTENDEES:" in prompt
+    assert "OWNERS:" in prompt
 
 
 def test_timestamped_prompt_transcript_is_segment_granular_and_export_format_unchanged():
@@ -161,5 +159,5 @@ def test_timestamped_prompt_transcript_is_segment_granular_and_export_format_unc
 
     assert prompt_transcript == "[00:12] Good morning\n[00:19] Update complete"
     assert "**[00:12]** Good morning" in exported
-    assert "Each transcript line begins with [MM:SS]" in prompt
+    assert "each line begins with [MM:SS]" in prompt
     assert "<transcript>\n[00:12] Good morning\n[00:19] Update complete\n</transcript>" in prompt

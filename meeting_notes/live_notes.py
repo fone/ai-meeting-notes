@@ -194,6 +194,7 @@ def entries_for_prompt(entries: list[NoteEntry]) -> str:
     lines: list[str] = []
     for entry in entries:
         marker = {"action": "[ ] ", "question": "? ", "marker": "", "note": ""}[entry.kind]
-        content = f"[{format_offset(entry.offset_s)}] {marker}{entry.text}".rstrip()
+        speaker = f"@{entry.speaker} " if entry.speaker else ""
+        content = f"[{format_offset(entry.offset_s)}] {marker}{speaker}{entry.text}".rstrip()
         lines.append(content)
     return "\n".join(lines)

@@ -12,7 +12,7 @@ from .meeting_context import split_csv
 from .logger import get_logger
 from .live_notes import (
     entries_for_prompt, entries_tags, format_live_notes, format_note_entries,
-    format_speaker_anchors, parse_live_notes,
+    parse_live_notes,
 )
 from .recording_notes import NoteEntry
 
@@ -45,8 +45,6 @@ class NoteMaker:
         api_key: Optional[str] = None,
         api_base_url: Optional[str] = None,
         provider_name: Optional[str] = None,
-        speaker_anchor_window_before_s: int = 45,
-        speaker_anchor_window_after_s: int = 10,
     ):
         """
         Initialize note maker.
@@ -64,8 +62,6 @@ class NoteMaker:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.transcripts_dir.mkdir(parents=True, exist_ok=True)
         self.ai_provider = ai_provider
-        self.speaker_anchor_window_before_s = speaker_anchor_window_before_s
-        self.speaker_anchor_window_after_s = speaker_anchor_window_after_s
         self.summarizer: Optional[Any] = None
 
         if ai_provider in ["openai", "anthropic", "openrouter", "ollama_cloud", "custom_openai_compatible"]:
@@ -175,9 +171,6 @@ class NoteMaker:
 
                 # All active adapters build their prompt through BaseSummarizer.
                 # Keep this invocation-local context out of transcript prose.
-                self.summarizer.speaker_anchors = format_speaker_anchors(entries or [])
-                self.summarizer.anchor_window_before_s = self.speaker_anchor_window_before_s
-                self.summarizer.anchor_window_after_s = self.speaker_anchor_window_after_s
                 try:
                     ai_summary = self.summarizer.summarize(
                         prompt_transcript or transcript_text,
@@ -519,10 +512,18 @@ This meeting covered several topics. Key themes included: {', '.join(summary['ke
             sections.append("- None identified")
         sections.append("")
 
-        # This is explicitly not an attendee roster. The source is the
-        # transcript, so it can include people discussed but absent.
+        # Attendees — the verbatim typed roster, surfaced as ground truth.
+        attendees = getattr(ai_summary, "attendees", [])
+        if attendees:
+            sections.append("### Attendees\n")
+            sections.append(", ".join(attendees))
+            sections.append("")
+
+        # Owners is a deliberately narrow subset: only people with action
+        # items or who are the subject of a decision. Separate from the
+        # full attendee roster.
         if ai_summary.participants:
-            sections.append("### Names Mentioned\n")
+            sections.append("### Owners\n")
             sections.append(", ".join(ai_summary.participants))
             sections.append("")
 

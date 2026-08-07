@@ -22,6 +22,7 @@ class MeetingSummary:
     participants: List[str]
     open_questions: List[str] = field(default_factory=list)
     title: Optional[str] = None
+    attendees: List[str] = field(default_factory=list)
 
 
 class OllamaSummarizer:
@@ -56,12 +57,9 @@ class OllamaSummarizer:
         return summary
 
     def _build_prompt(self, transcript: str, user_notes: str = "", attendees: str = "", glossary: str = "") -> str:
-        """Build the shared version 2 prompt used by local Ollama too."""
+        """Build the shared version 3 prompt used by local Ollama too."""
         return build_prompt(
             transcript, user_notes=user_notes, attendees=attendees, glossary=glossary,
-            speaker_anchors=getattr(self, "speaker_anchors", ""),
-            anchor_window_before_s=getattr(self, "anchor_window_before_s", 45),
-            anchor_window_after_s=getattr(self, "anchor_window_after_s", 10),
         )
 
     def _legacy_build_prompt(self, transcript: str, user_notes: str = "") -> str:
@@ -227,7 +225,12 @@ NAMES MENTIONED:
                         sections[current_section] = '\n'.join(current_content).strip()
                     current_section = 'open_questions'
                     current_content = []
-                elif line.startswith('PEOPLE:') or line.startswith('NAMES MENTIONED:') or line.startswith('PARTICIPANTS:'):
+                elif line.startswith('ATTENDEES:'):
+                    if current_section:
+                        sections[current_section] = '\n'.join(current_content).strip()
+                    current_section = 'attendees'
+                    current_content = []
+                elif line.startswith('PEOPLE:') or line.startswith('NAMES MENTIONED:') or line.startswith('PARTICIPANTS:') or line.startswith('OWNERS:'):
                     if current_section:
                         sections[current_section] = '\n'.join(current_content).strip()
                     current_section = 'participants'
@@ -287,6 +290,13 @@ NAMES MENTIONED:
             else:
                 participants = []
 
+            # Attendees is the verbatim typed roster.
+            attendees_text = sections.get('attendees', '')
+            if attendees_text and 'not recorded' not in attendees_text.lower():
+                attendees = [p.strip() for p in attendees_text.split(',')]
+            else:
+                attendees = []
+
             return MeetingSummary(
                 overview=overview,
                 key_points=key_points,
@@ -295,6 +305,7 @@ NAMES MENTIONED:
                 open_questions=open_questions,
                 participants=participants,
                 title=title,
+                attendees=attendees,
             )
 
         except Exception as e:
