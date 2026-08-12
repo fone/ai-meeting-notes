@@ -1332,6 +1332,8 @@ class MeetingNotesApp(App):
             api_key = self.config.openai_api_key or os.getenv("OPENAI_API_KEY")
         elif self.config.ai_provider == "anthropic":
             api_key = self.config.anthropic_api_key or os.getenv("ANTHROPIC_API_KEY")
+        elif self.config.ai_provider == "claude_code_subscription":
+            api_key = None
         elif self.config.ai_provider == "openrouter":
             api_key = self.config.openrouter_api_key or os.getenv("OPENROUTER_API_KEY")
         elif self.config.ai_provider == "ollama_cloud":
@@ -3047,6 +3049,8 @@ class MeetingNotesApp(App):
                 api_key = self.config.openai_api_key or os.getenv("OPENAI_API_KEY")
             elif self.config.ai_provider == "anthropic":
                 api_key = self.config.anthropic_api_key or os.getenv("ANTHROPIC_API_KEY")
+            elif self.config.ai_provider == "claude_code_subscription":
+                api_key = None
             elif self.config.ai_provider == "openrouter":
                 api_key = self.config.openrouter_api_key or os.getenv("OPENROUTER_API_KEY")
             elif self.config.ai_provider == "ollama_cloud":

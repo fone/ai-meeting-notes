@@ -18,7 +18,7 @@ class AppConfig:
     # AI Summarization
     # Fresh installs must open cleanly without a provider credential. The user
     # selects a provider from Settings when ready; transcription still works.
-    ai_provider: str = "none"  # "openai", "anthropic", "openrouter", "ollama_cloud", "local", or "none"
+    ai_provider: str = "none"  # "openai", "anthropic", "claude_code_subscription", "openrouter", "ollama_cloud", "local", or "none"
     ai_model: str = ""  # Provider-specific model ID or tier, configured in Settings
     
     # API Keys (or set environment variables)
@@ -182,7 +182,7 @@ def validate_config(config: AppConfig) -> tuple[bool, Optional[str]]:
         (is_valid, error_message)
     """
     # Validate AI provider
-    valid_providers = ["openai", "anthropic", "openrouter", "ollama_cloud", "custom_openai_compatible", "local", "none"]
+    valid_providers = ["openai", "anthropic", "claude_code_subscription", "openrouter", "ollama_cloud", "custom_openai_compatible", "local", "none"]
     if config.ai_provider not in valid_providers:
         return False, f"Invalid ai_provider: {config.ai_provider}. Must be one of {valid_providers}"
     
@@ -210,6 +210,13 @@ def validate_config(config: AppConfig) -> tuple[bool, Optional[str]]:
         valid_models = ["haiku", "sonnet"]
         if config.ai_model not in valid_models:
             return False, f"Invalid ai_model for Anthropic: {config.ai_model}. Must be one of {valid_models}"
+
+    elif config.ai_provider == "claude_code_subscription":
+        if config.ai_model != "haiku":
+            return False, "Claude Code subscription provider currently supports only the Haiku model"
+        import shutil
+        if not shutil.which("claude"):
+            return False, "Claude Code CLI not found. Install it and sign in with your Claude subscription first."
     
     elif config.ai_provider == "openrouter":
         api_key = config.openrouter_api_key or os.getenv("OPENROUTER_API_KEY")

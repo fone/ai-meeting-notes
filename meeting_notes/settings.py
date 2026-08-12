@@ -376,6 +376,7 @@ class SettingsScreen(Screen):
         providers = [
             ("openai", "OpenAI (GPT-4o Mini/4o)", "Fast, cheap, great quality"),
             ("anthropic", "Anthropic (Claude)", "Excellent quality, best for action items"),
+            ("claude_code_subscription", "Claude Code Subscription (Haiku)", "Uses local Claude Code login, no API key"),
             ("openrouter", "OpenRouter", "Access to 300+ models"),
             ("ollama_cloud", "Ollama Cloud", "Hosted Ollama models with any model ID"),
             ("custom_openai_compatible", "Custom OpenAI-compatible", "Your endpoint, API key, and model ID"),
@@ -401,6 +402,8 @@ class SettingsScreen(Screen):
             widgets.extend(self.render_openai_settings())
         elif current_provider == "anthropic":
             widgets.extend(self.render_anthropic_settings())
+        elif current_provider == "claude_code_subscription":
+            widgets.extend(self.render_claude_code_subscription_settings())
         elif current_provider == "openrouter":
             widgets.extend(self.render_openrouter_settings())
         elif current_provider == "ollama_cloud":
@@ -494,6 +497,21 @@ class SettingsScreen(Screen):
         
         return widgets
     
+    def render_claude_code_subscription_settings(self) -> list:
+        """Render the local Claude Code subscription provider details."""
+        return [
+            Static("Claude Code Subscription", classes="settings-section-title"),
+            Static("Model: Claude Haiku", classes="settings-label"),
+            Static(
+                "Uses the local Claude Code login. No API key is stored in Meeting Notes.",
+                classes="settings-hint",
+            ),
+            Static(
+                "Install Claude Code and run `claude` once to sign in before saving.",
+                classes="settings-hint",
+            ),
+        ]
+
     def render_openrouter_settings(self) -> list:
         """Render OpenRouter-specific settings."""
         widgets = []
@@ -866,6 +884,8 @@ class SettingsScreen(Screen):
                 if event.button.provider_id == "openai":
                     self.config["ai_model"] = "mini"
                 elif event.button.provider_id == "anthropic":
+                    self.config["ai_model"] = "haiku"
+                elif event.button.provider_id == "claude_code_subscription":
                     self.config["ai_model"] = "haiku"
                 elif event.button.provider_id == "openrouter":
                     self.config["ai_model"] = "balanced"

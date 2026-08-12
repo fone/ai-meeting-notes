@@ -3,6 +3,10 @@
 from dataclasses import dataclass, field
 from typing import List, Optional
 import os
+import json
+import shutil
+import subprocess
+import tempfile
 import time
 
 from .logger import get_logger
@@ -436,6 +440,95 @@ class AnthropicSummarizer(BaseSummarizer):
                     logger.error(f"All {max_retries} attempts failed for Anthropic API call")
                     logger.error(error_msg, exc_info=True)
                     raise
+
+
+class ClaudeCodeSubscriptionSummarizer(BaseSummarizer):
+    """Summarize through a locally authenticated Claude Code subscription.
+
+    This deliberately uses Claude Code's headless CLI rather than an Anthropic
+    API key. The transcript never becomes a command-line argument, and Claude
+    gets no tools, project context, or reusable session state.
+    """
+
+    MODEL = "haiku"
+    CLI_NAME = "claude"
+    TIMEOUT_SECONDS = 180
+    # Claude currently caps stdin at 10 MiB. Leave room below that hard limit
+    # instead of relying on the CLI to truncate an important transcript.
+    MAX_PROMPT_BYTES = 9 * 1024 * 1024
+
+    def __init__(self, cli_path: Optional[str] = None, runner=subprocess.run):
+        self.cli_path = cli_path or shutil.which(self.CLI_NAME)
+        self._runner = runner
+        if not self.cli_path:
+            raise ValueError(
+                "Claude Code CLI is not available. Install it, then run 'claude' "
+                "once to sign in with your Claude subscription."
+            )
+
+    def _command(self) -> list[str]:
+        assert self.cli_path is not None
+        return [
+            self.cli_path,
+            "-p",
+            "--model", self.MODEL,
+            "--output-format", "json",
+            "--no-session-persistence",
+            "--safe-mode",
+            "--tools", "",
+        ]
+
+    def summarize(self, transcript: str, user_notes: str = "", attendees: str = "", glossary: str = "") -> MeetingSummary:
+        prompt = self._build_prompt(
+            transcript, user_notes=user_notes, attendees=attendees, glossary=glossary,
+        )
+        if len(prompt.encode("utf-8")) > self.MAX_PROMPT_BYTES:
+            raise RuntimeError(
+                "Meeting transcript is too large for Claude Code subscription summarization "
+                f"({self.MAX_PROMPT_BYTES // (1024 * 1024)} MiB safety limit)."
+            )
+
+        logger.info("Generating AI summary with Claude Code subscription (Haiku)...")
+        try:
+            # An empty temporary directory prevents project CLAUDE.md context and
+            # is removed immediately after the one-shot subprocess exits.
+            with tempfile.TemporaryDirectory(prefix="meeting-notes-claude-") as temp_dir:
+                completed = self._runner(
+                    self._command(),
+                    input=prompt,
+                    text=True,
+                    capture_output=True,
+                    cwd=temp_dir,
+                    timeout=self.TIMEOUT_SECONDS,
+                    check=False,
+                )
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(
+                f"Claude Code summarization timed out after {self.TIMEOUT_SECONDS} seconds."
+            ) from exc
+        except OSError as exc:
+            raise RuntimeError(f"Could not start Claude Code: {exc}") from exc
+
+        if completed.returncode != 0:
+            # stderr can include account/CLI diagnostics but must never include
+            # transcript data. Keep the user-facing message compact.
+            detail = (completed.stderr or completed.stdout or "unknown CLI failure").strip()
+            raise RuntimeError(f"Claude Code summarization failed: {detail[:500]}")
+
+        try:
+            payload = json.loads(completed.stdout)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError("Claude Code returned an invalid summary response.") from exc
+
+        if payload.get("type") != "result" or payload.get("subtype") != "success":
+            raise RuntimeError(
+                "Claude Code did not complete the summary: "
+                f"{payload.get('subtype', 'unknown result')}"
+            )
+        response_text = payload.get("result")
+        if not isinstance(response_text, str) or not response_text.strip():
+            raise RuntimeError("Claude Code returned no visible summary content.")
+        return self._parse_response(response_text)
 
 
 class OpenRouterSummarizer(BaseSummarizer):

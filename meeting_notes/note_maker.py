@@ -25,7 +25,7 @@ except ImportError:
     OLLAMA_AVAILABLE = False
 
 try:
-    from .ai_summarizer import OpenAISummarizer, AnthropicSummarizer, OpenRouterSummarizer, OllamaCloudSummarizer, OpenAICompatibleSummarizer, MeetingSummary  # type: ignore
+    from .ai_summarizer import ClaudeCodeSubscriptionSummarizer, OpenAISummarizer, AnthropicSummarizer, OpenRouterSummarizer, OllamaCloudSummarizer, OpenAICompatibleSummarizer, MeetingSummary  # type: ignore
     CLOUD_AVAILABLE = True
 except ImportError:
     CLOUD_AVAILABLE = False
@@ -64,7 +64,7 @@ class NoteMaker:
         self.ai_provider = ai_provider
         self.summarizer: Optional[Any] = None
 
-        if ai_provider in ["openai", "anthropic", "openrouter", "ollama_cloud", "custom_openai_compatible"]:
+        if ai_provider in ["openai", "anthropic", "claude_code_subscription", "openrouter", "ollama_cloud", "custom_openai_compatible"]:
             if not CLOUD_AVAILABLE:
                 logger.warning("Cloud AI packages not installed")
                 self.ai_provider = "none"
@@ -80,6 +80,9 @@ class NoteMaker:
                         self.summarizer = AnthropicSummarizer(api_key=api_key, model=ai_model)
                         model_name = AnthropicSummarizer.MODELS[ai_model]["name"]
                         logger.info(f"AI summarization enabled (Anthropic: {model_name})")
+                    elif ai_provider == "claude_code_subscription":
+                        self.summarizer = ClaudeCodeSubscriptionSummarizer()
+                        logger.info("AI summarization enabled (Claude Code subscription: Haiku)")
                     elif ai_provider == "openrouter":
                         self.summarizer = OpenRouterSummarizer(api_key=api_key, model=ai_model)
                         model_name = OpenRouterSummarizer.MODELS[ai_model]["name"]
@@ -164,7 +167,7 @@ class NoteMaker:
         ai_suggested_title: Optional[str] = None
         if self.ai_provider != "none" and self.summarizer:
             try:
-                if self.ai_provider in ["openai", "anthropic", "openrouter", "ollama_cloud", "custom_openai_compatible"]:
+                if self.ai_provider in ["openai", "anthropic", "claude_code_subscription", "openrouter", "ollama_cloud", "custom_openai_compatible"]:
                     logger.info("Generating AI summary with cloud API")
                 else:
                     logger.info("Generating AI summary with local Ollama")
