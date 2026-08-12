@@ -12,7 +12,7 @@ This fork is built for reliable real meetings: recording preflight, live audio m
 - A **READY TO RECORD** preflight with live mic/system meters and routing warnings
 - Local Turbo transcription using faster-whisper's distilled `large-v3` model
 - Crash-safe live notes, plus timestamped entries and optional `@Speaker` anchors
-- AI summaries from Ollama Cloud, OpenAI-compatible services, local Ollama, or no AI
+- AI summaries from Ollama Cloud, Claude Code subscriptions, OpenAI-compatible services, local Ollama, or no AI
 - Markdown notes with decisions, action items, questions, tags, and Obsidian frontmatter
 - Pause/resume that excludes paused time from transcript offsets
 
@@ -114,11 +114,26 @@ The settings screen supports:
 | Provider | What you need |
 | --- | --- |
 | Ollama Cloud | Endpoint, model ID, and API key |
+| Claude Code Subscription | Local Claude Code CLI, a signed-in Claude subscription, and Haiku. No API key is stored by the app. |
 | OpenAI-compatible | Complete `/v1` base URL, model ID, and optional API key |
 | Local Ollama | A running Ollama service and a local model |
 | No AI | No credential. Records and transcribes but does not generate an AI summary. |
 
 For local Ollama, install Ollama through its official installer, pull the model you want, start its service, then select it in Settings. The recorder and Turbo transcription do **not** depend on Ollama.
+
+### Summary quality is collaborative
+
+The app can summarize a meeting with a single click, but the result is not produced by the model alone. It is a collaboration between your capture quality, the context you provide, and the model you select:
+
+1. **A complete, intelligible transcript** is the baseline. Run preflight and confirm both MIC and SYS meters before recording.
+2. **Attendees** are the authoritative spelling and attendance roster. Add them before recording when you can.
+3. **Glossary terms** protect client names, products, acronyms, and internal systems that transcription often gets wrong.
+4. **Live notes** are the strongest signal for priorities and ownership. Add concise timestamped notes as decisions and commitments happen. `@Name` tells the app who owns that note.
+5. **The selected model** determines how well the available evidence is synthesized. Models differ materially in long-context retention, cautious ownership attribution, technical-term handling, and whether they surface the work that matters.
+
+Do not judge the recorder or transcription pipeline from one provider or one bare transcript. A weaker model can produce a thin or generic note even when the recording is good. Conversely, a stronger model cannot reliably recover missing audio, an unnamed owner, or a client term it was never given.
+
+For long, technical, multi-topic meetings, test a candidate model against a real transcript before making it your default. Keep a known-good provider available for important meetings. In our validation, Ollama Cloud Kimi produced a stronger operational note than Claude Code Haiku from the same 69-minute transcript; Haiku remained a viable, useful subscription-backed alternative. Your meetings and terminology may produce a different result.
 
 ### Thinking models and output budget
 
